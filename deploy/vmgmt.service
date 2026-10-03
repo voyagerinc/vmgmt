@@ -1,0 +1,16 @@
+[Unit]
+Description=Voyager Endpoint Management Server
+After=network.target
+
+[Service]
+Type=simple
+# Adjust paths/user to your VPS. Running as a non-root user is recommended.
+User=root
+WorkingDirectory=/root/projects/vmgmt/server
+ExecStart=/root/projects/vmgmt/server/.venv/bin/python run_server.py --no-browser
+Restart=always
+RestartSec=5
+# Reads configuration from /root/projects/vmgmt/server/.env
+
+[Install]
+WantedBy=multi-user.target
