@@ -37,10 +37,10 @@ Name: "firewall"; Description: "Allow inbound connections on the server port (re
 ; Pre-flight + service registration + start (service wrapper is bundled as ManagementServer.exe entrypoint).
 Filename: "{app}\ManagementServer.exe"; Parameters: "service install"; Flags: runhidden; StatusMsg: "Registering Windows service..."
 Filename: "sc.exe"; Parameters: "config {#SvcName} start= auto"; Flags: runhidden
-Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Endpoint Mgmt Server"" dir=in action=allow protocol=TCP localport=8080"; Flags: runhidden; Tasks: firewall
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Voyager Endpoint Server"" dir=in action=allow protocol=TCP localport=8084"; Flags: runhidden; Tasks: firewall
 Filename: "sc.exe"; Parameters: "start {#SvcName}"; Flags: runhidden; StatusMsg: "Starting Management Server..."
 ; Open the first-run wizard / admin console in the default browser.
-Filename: "http://127.0.0.1:8080/"; Description: "Open the Admin Portal"; Flags: shellexec postinstall nowait
+Filename: "http://127.0.0.1:8084/"; Description: "Open the Admin Portal"; Flags: shellexec postinstall nowait
 
 [UninstallRun]
 Filename: "sc.exe"; Parameters: "stop {#SvcName}"; Flags: runhidden; RunOnceId: "StopSvc"

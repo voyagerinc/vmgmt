@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover
 
 from agent import Agent
 
-DISCOVERY_PORTS = [8080, 443, 8443]
+DISCOVERY_PORTS = [8084, 8080, 443, 8443]
 
 
 def discover_servers(timeout: float = 0.3) -> list[str]:

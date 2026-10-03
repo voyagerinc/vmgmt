@@ -9,7 +9,7 @@ cd server
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-python run_server.py            # opens http://127.0.0.1:8080/
+python run_server.py            # opens http://127.0.0.1:8084/
 ```
 - First run auto-creates the SQLite DB, a **Platform Super Admin**, a **Demo tenant** (Enterprise
   license), sample policies, and an enrollment token. Credentials print to the console and to
@@ -21,8 +21,8 @@ python run_server.py            # opens http://127.0.0.1:8080/
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `EMP_DEPLOYMENT_MODEL` | `on_premise` | `on_premise` / `cloud_vps` / `hybrid` / `central_saas` |
-| `EMP_SERVER_PUBLIC_URL` | `http://127.0.0.1:8080` | Used in license packages & links |
-| `EMP_HOST` / `EMP_PORT` | `127.0.0.1` / `8080` | Bind address |
+| `EMP_SERVER_PUBLIC_URL` | `http://127.0.0.1:8084` | Used in license packages & links |
+| `EMP_HOST` / `EMP_PORT` | `127.0.0.1` / `8084` | Bind address |
 | `EMP_DATABASE_URL` | SQLite file | Set a PostgreSQL DSN for production (PRD §28) |
 | `EMP_SECRET_KEY` | auto (`data/.secret`) | JWT + license HMAC key |
 | `EMP_EVIDENCE_KEY` | auto (`data/.evidence_key`) | Fernet key for evidence-at-rest |
