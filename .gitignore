@@ -37,3 +37,6 @@ agent.log
 Thumbs.db
 .idea/
 .vscode/
+
+# agent runtime logs
+agent/*.log
