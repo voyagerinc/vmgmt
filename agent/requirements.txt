@@ -1,0 +1,6 @@
+requests==2.32.3
+psutil==6.1.1
+mss==10.0.0
+Pillow==11.1.0
+# Windows-only (installed by Agent_Setup.exe on Windows; optional in dev):
+pywin32==308 ; sys_platform == "win32"

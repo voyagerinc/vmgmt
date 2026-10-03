@@ -1,0 +1,142 @@
+"""Software downloads (PRD §7): server installer bundle + per-tenant pre-configured agent.
+
+Flow the tenant follows:
+  1. Download & install the SERVER software (this bundle) — or use the one already running.
+  2. Download the AGENT package — it embeds this server's URL + the tenant's license + a fresh
+     enrollment token (agent_config.json), so it self-enrolls with no typing.
+  3. Install the agent on each PC; data appears on the tenant's dashboard.
+"""
+from __future__ import annotations
+
+import io
+import json
+import zipfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy.orm import Session
+
+from .. import audit
+from ..config import BASE_DIR, settings
+from ..database import get_db
+from ..deps import get_current_user, require_roles, resolve_tenant
+from ..models import AdminUser, EnrollmentToken, Role, Tenant
+from ..services import license_service as lic_svc
+
+router = APIRouter(prefix="/api/download", tags=["downloads"])
+
+PROJECT_ROOT = BASE_DIR.parent              # .../Emp Monitoring
+AGENT_DIR = PROJECT_ROOT / "agent"
+AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"   # prebuilt standalone agent
+_EXCLUDE_DIRS = {".venv", "venv", "__pycache__", "data", "logs", "build", "dist",
+                 "agent_dist", "agent_package", ".git", "node_modules"}
+_EXCLUDE_FILES = {".env", ".secret", ".evidence_key", "FIRST_RUN.txt"}
+
+
+def _safe(name: str) -> str:
+    return "".join(c for c in name if c.isalnum() or c in " _-").strip() or "download"
+
+
+@router.get("/agent")
+def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(get_db),
+                   user: AdminUser = Depends(require_roles(Role.IT_ADMIN, Role.CUSTOMER_OWNER))):
+    """Build and stream a ready-to-run agent package for the tenant (requires active license)."""
+    tid = resolve_tenant(user, tenant_id)
+    tenant = db.get(Tenant, tid)
+    lic = lic_svc.active_license(db, tid)
+    if not lic_svc.is_usable(lic):
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED,
+                            "License is not active. Activate the license on this server first.")
+
+    # fresh long-lived enrollment token for this download
+    tok = EnrollmentToken(tenant_id=tid, label="agent-download", max_uses=0,
+                          expires_at=datetime.now(timezone.utc) + timedelta(days=365),
+                          created_by=user.id)
+    db.add(tok)
+    db.flush()                      # materialize tok.token before embedding it in the config
+
+    config = {
+        "company": tenant.company_name, "tenant_id": tid,
+        "server": settings.server_public_url.rstrip("/"),
+        "license_id": lic.id, "enroll_token": tok.token,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("VoyagerAgent/agent_config.json", json.dumps(config, indent=2))
+        if AGENT_EXE.exists():
+            # Standalone .exe build: Python + all dependencies are bundled inside. Nothing to
+            # install on the employee PC — double-click the .exe and it self-enrolls + auto-starts.
+            z.write(AGENT_EXE, "VoyagerAgent/VoyagerAgent.exe")
+            z.writestr("VoyagerAgent/README.txt",
+                       f"Voyager Endpoint Agent - {tenant.company_name}\n"
+                       f"Server : {config['server']}\nLicense: {lic.id}\n\n"
+                       "TO DEPLOY ON AN EMPLOYEE PC:\n"
+                       "  1. Copy this whole 'VoyagerAgent' folder to the PC.\n"
+                       "  2. Double-click VoyagerAgent.exe.\n\n"
+                       "No Python or other software is required - everything is bundled in the .exe.\n"
+                       "It enrolls automatically (reads agent_config.json), starts in the background,\n"
+                       "and re-launches at every logon. Keep the .exe and agent_config.json together.\n")
+        else:
+            # Fallback (no prebuilt exe on this server): source package with a .bat runner.
+            for fname in ("agent.py", "collectors.py", "requirements.txt"):
+                fp = AGENT_DIR / fname
+                if fp.exists():
+                    z.writestr(f"VoyagerAgent/{fname}", fp.read_text(encoding="utf-8"))
+            z.writestr("VoyagerAgent/install_and_run.bat",
+                       "@echo off\r\ncd /d \"%~dp0\"\r\n"
+                       "python -m pip install -r requirements.txt\r\npython agent.py\r\npause\r\n")
+            z.writestr("VoyagerAgent/README.txt",
+                       "Source package (Python 3.11+ required). Double-click install_and_run.bat.\n")
+    audit.record(db, action="download_agent", tenant_id=tid, actor_id=user.id,
+                 actor_email=user.email, target_type="tenant", target_id=tid,
+                 new_value={"format": "exe" if AGENT_EXE.exists() else "source"})
+    db.commit()
+    data = buf.getvalue()
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{_safe(tenant.company_name)}_VoyagerAgent.zip"'})
+
+
+@router.get("/server")
+def download_server(db: Session = Depends(get_db),
+                    user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
+    """Stream the server software bundle (source + agent + docs) for on-premise install."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for base in (BASE_DIR, AGENT_DIR):
+            for fp in base.rglob("*"):
+                if fp.is_dir():
+                    continue
+                if any(part in _EXCLUDE_DIRS for part in fp.parts):
+                    continue
+                if fp.name in _EXCLUDE_FILES or fp.suffix in (".pyc", ".db", ".db-wal", ".db-shm"):
+                    continue
+                arc = fp.relative_to(PROJECT_ROOT)
+                try:
+                    z.write(fp, str(arc))
+                except Exception:
+                    continue
+        for extra in ("README.md", "generate_agent.py"):
+            fp = PROJECT_ROOT / extra
+            if fp.exists():
+                z.write(fp, extra)
+        z.writestr("INSTALL.txt",
+                   "ENDPOINT MANAGEMENT SERVER - install\n"
+                   "====================================\n\n"
+                   "1. Install Python 3.11+ on the server machine.\n"
+                   "2. Open a terminal in the 'server' folder and run:\n"
+                   "     python -m venv .venv\n"
+                   "     .venv\\Scripts\\activate   (Windows)\n"
+                   "     pip install -r requirements.txt\n"
+                   "     python run_server.py\n"
+                   "3. The admin console opens at http://<this-server>:8080/\n"
+                   "4. Sign in with the company admin credentials issued to you, then activate\n"
+                   "   your license (License ID + License Key) on the activation screen.\n"
+                   "5. Go to Downloads and get the pre-configured Agent package for your PCs.\n\n"
+                   "For a double-click Windows installer, see installers/README.md.\n")
+    audit.record(db, action="download_server", tenant_id=user.tenant_id, actor_id=user.id,
+                 actor_email=user.email)
+    db.commit()
+    return Response(content=buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="EndpointManagementServer.zip"'})

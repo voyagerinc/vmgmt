@@ -1,0 +1,39 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- Secrets & runtime data (NEVER commit) ----
+server/.env
+server/.secret
+server/.evidence_key
+server/data/
+server/logs/
+server/FIRST_RUN.txt
+**/data/outbox/
+
+# ---- Build artifacts / binaries (rebuild with PyInstaller) ----
+server/agent_dist/
+agent/dist/
+agent/build/
+installers/build/
+installers/dist/
+Output/
+*.spec
+*.exe
+
+# ---- Generated per-tenant packages ----
+agent_package/
+
+# ---- Agent local state ----
+agent_state.json
+status.txt
+agent.log
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

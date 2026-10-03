@@ -1,0 +1,5 @@
+2026-10-03 06:42:52,491 INFO Enrolled as device 613c7fafb4754b5f92cf25014591e3d4 (status=active)
+2026-10-03 06:42:52,504 INFO Agent 4.0.0 starting on Windows-10-10.0.26200-SP0
+2026-10-03 06:42:52,956 INFO Policy updated: 3 rule(s)
+2026-10-03 06:47:54,871 INFO Screenshot job c21933329f76444fa62b452f7070da11 reason=scheduled
+2026-10-03 06:47:55,558 INFO Evidence uploaded: f81377c67fa34b81bb1024d9470c70f7
