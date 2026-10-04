@@ -50,8 +50,9 @@ taskkill /f /im python.exe >nul 2>&1
 
 echo [3/5] Extracting (your data and .env are preserved) ...
 if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%"
-powershell -NoProfile -Command "Expand-Archive -Force '%TMPZIP%' '%TMPDIR%'"
-if errorlevel 1 ( echo [ERROR] Extract failed. & pause & exit /b 1 )
+rem Server 2012 has no Expand-Archive (PowerShell 3.0). Use .NET ZipFile, then Shell COM fallback.
+powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{$sh=New-Object -ComObject Shell.Application;New-Item -ItemType Directory -Force '%TMPDIR%'^|Out-Null;$sh.NameSpace('%TMPDIR%').CopyHere($sh.NameSpace('%TMPZIP%').Items(),20);Start-Sleep -Seconds 6}"
+if not exist "%TMPDIR%\server\app\main.py" ( echo [ERROR] Extract failed. & pause & exit /b 1 )
 
 rem --- replace application code only; never touch server\data or server\.env ---
 robocopy "%TMPDIR%\server\app" "server\app" /MIR /NFL /NDL /NJH /NJS /NC /NS >nul
