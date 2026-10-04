@@ -220,6 +220,17 @@ VIEWS.dashboard = async (main) => {
   if(d.license){ const L=d.license;
     k.appendChild(kpi(L.days_left+"d","License",`${esc(L.edition)} · ${esc(L.status)} · ${L.used_devices}/${L.max_devices} seats`)); }
   main.appendChild(k);
+
+  // ---- interactive charts (PRD §2.7 / §3.3) ----
+  const charts=el(`<div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px"></div>`);
+  const dv=d.devices;
+  const donut=donutSVG([["online",dv.online,"#22c55e"],["offline",dv.offline,"#93a2c4"],["pending",dv.pending,"#3b82f6"]]);
+  const c1=el(`<div class="card"><h3 style="margin:0 0 10px">Devices</h3></div>`); c1.appendChild(donut); charts.appendChild(c1);
+  const sev=d.alerts_by_severity||{};
+  const bars=barsSVG([["critical",sev.critical||0,"#ef4444"],["high",sev.high||0,"#fb7185"],["medium",sev.medium||0,"#f59e0b"],["low",sev.low||0,"#38bdf8"],["info",sev.info||0,"#7dd3fc"]]);
+  const c2=el(`<div class="card"><h3 style="margin:0 0 10px">Open alerts by severity</h3></div>`); c2.appendChild(bars); charts.appendChild(c2);
+  main.appendChild(charts);
+
   const live=el(`<div class="card" style="margin-top:14px"><h3 style="margin:0 0 10px">Live device health</h3></div>`);
   const health=await api("/api/health/latest"+qp());
   live.appendChild(tableFrom(["Device","Status","CPU %","RAM %","Disk %","Battery","Last seen"],
@@ -269,17 +280,22 @@ async function deviceDetail(main, id){
 
   // ---- Per-agent data profile (what this device collects / shows) ----
   const prof=d.collection||{};
-  const CATS=[["health","Resource health (CPU/RAM/disk/battery)"],["software","Installed software inventory"],
-    ["activity","Web / application activity"],["file_events","File / DLP events"],["screenshots","Screenshots on request"]];
+  const CATS=[["health","Resource health (CPU/RAM/disk/battery)"],["active_time","Active-time tracking"],
+    ["software","Installed software inventory"],["activity","Web / application activity"],
+    ["website","Website monitoring"],["email","Email monitoring"],["file_events","File / DLP events"],
+    ["usb","USB control"],["keystrokes","Keystroke logging (passwords skipped)"],["screenshots","Screenshots"]];
+  const ROADMAP=new Set(["email","usb","keystrokes"]);   // platform-side collector pending
   const pc=el(`<div class="card" style="margin-top:14px"><h3 style="margin:0 0 6px">Data collection profile</h3>
-    <div class="muted" style="margin-bottom:10px">Choose what to collect from <b>${esc(dev.hostname)}</b>. Disabled categories are not gathered by the agent and won't appear here — the agent applies this on its next sync.</div></div>`);
+    <div class="muted" style="margin-bottom:10px">Choose what to collect from <b>${esc(dev.hostname)}</b>. Disabled categories are not gathered by the agent and won't appear here — applied on the agent's next sync. Items marked (soon) are configured here but their Windows-side collector is still in development.</div></div>`);
   const togg=el(`<div style="display:flex;flex-wrap:wrap;gap:14px"></div>`);
   const boxes={};
   CATS.forEach(([k,label])=>{ const w=el(`<label style="display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);padding:8px 12px;border-radius:8px;cursor:pointer"></label>`);
-    const cb=el(`<input type="checkbox" />`); cb.checked=!!prof[k]; boxes[k]=cb; w.append(cb, el(`<span>${esc(label)}</span>`)); togg.appendChild(w); });
+    const cb=el(`<input type="checkbox" />`); cb.checked=!!prof[k]; boxes[k]=cb; w.append(cb, el(`<span>${esc(label)}${ROADMAP.has(k)?' <span class="muted">(soon)</span>':''}</span>`)); togg.appendChild(w); });
   pc.appendChild(togg);
-  const save=el(`<button class="btn" style="margin-top:12px">Save profile</button>`);
-  save.onclick=async()=>{ const body={}; CATS.forEach(([k])=>body[k]=boxes[k].checked);
+  const iv=el(`<div class="field" style="max-width:260px;margin-top:12px"><label>Screenshot interval (seconds, 0 = on request only)</label><input type="number" min="0" value="${Number(prof.screenshot_interval||0)}" id="ssIv"/></div>`);
+  pc.appendChild(iv);
+  const save=el(`<button class="btn">Save profile</button>`);
+  save.onclick=async()=>{ const body={}; CATS.forEach(([k])=>body[k]=boxes[k].checked); body.screenshot_interval=Number(pc.querySelector("#ssIv").value||0);
     try{ await api(`/api/devices/${id}/collection`,{method:"PUT",body}); toast("Profile saved — agent will apply on next sync"); }catch(e){toast(e.message,true);} };
   pc.appendChild(save);
   main.appendChild(pc);
@@ -556,14 +572,15 @@ function addTenant(main){
     {k:"owner_email",label:"Owner username / email (blank = registered email)",type:"email"},
     {k:"owner_password",label:"Owner password (blank = auto-generate)",type:"text"},
     {k:"edition",label:"License edition",type:"select",options:["standard","enterprise","demo","custom"],value:"standard"},
-    {k:"term_days",label:"Term (days)",type:"number",value:365},
+    {k:"license_type",label:"License type",type:"select",options:[{v:"subscription_monthly",t:"Subscription (monthly)"},{v:"lifetime",t:"Lifetime (one-time, 1yr support)"}],value:"subscription_monthly"},
+    {k:"term_days",label:"Term (days) — ignored for lifetime",type:"number",value:365},
     {k:"max_devices",label:"Max devices",type:"number",value:25},
   ]);
   modal("New customer — create account, license & email key",f,async()=>{
     const v=f._values();
     const body={company_name:v.company_name,contact_email:v.contact_email,deployment_model:v.deployment_model,
       owner_name:v.owner_name,owner_email:v.owner_email||null,owner_password:v.owner_password||null,
-      edition:v.edition,term_days:+v.term_days,max_devices:+v.max_devices,send_email:true};
+      edition:v.edition,license_type:v.license_type,term_days:+v.term_days,max_devices:+v.max_devices,send_email:true};
     const r=await api("/api/tenants/provision",{method:"POST",body});
     const emailLine = r.email_status==="smtp"
       ? `✓ License key emailed to <b>${esc(v.contact_email)}</b>.`
@@ -618,8 +635,9 @@ function addLicense(tenantId){
 async function showLicenses(tenantId){
   const rows=await api(`/api/tenants/${tenantId}/licenses`);
   const body=el(`<div></div>`);
-  body.appendChild(tableFrom(["Edition","Status","Expiry","Devices","Admins","Key"],
-    rows.map(l=>[esc(l.edition),statusBadge(l.status),fmtDate(l.expiry_date),l.max_devices,l.max_admins,
+  body.appendChild(tableFrom(["Edition","Type","Status","Expiry","Devices","Key"],
+    rows.map(l=>[esc(l.edition),l.license_type==="lifetime"?'<span class="badge b-ok">lifetime</span>':'<span class="pill">monthly</span>',
+      statusBadge(l.status),l.license_type==="lifetime"?"—":fmtDate(l.expiry_date),l.max_devices,
       `<button class="btn sm ghost" data-key="${l.id}">⬇ .lic</button>`])));
   body.querySelectorAll("[data-key]").forEach(b=>b.onclick=()=>downloadWithAuth(`/api/licenses/${b.dataset.key}/key`,"license.lic"));
   modal("Licenses",body,null,"Close");
@@ -809,6 +827,32 @@ function tableFrom(headers, rows){
   t.appendChild(tb); return t;
 }
 function cardTable(title,headers,rows){ const c=el(`<div class="card"><h3 style="margin:0 0 10px">${esc(title)}</h3></div>`); c.appendChild(tableFrom(headers,rows)); return c; }
+
+// ---- lightweight inline-SVG charts (no external libs) ----
+function donutSVG(series){ // [[label,value,color],...]
+  const total=series.reduce((s,x)=>s+x[1],0)||1;
+  const r=52,cx=70,cy=70,circ=2*Math.PI*r; let off=0;
+  const segs=series.filter(s=>s[1]>0).map(([lab,val,col])=>{
+    const frac=val/total, dash=`${(frac*circ).toFixed(2)} ${(circ).toFixed(2)}`;
+    const seg=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${col}" stroke-width="16" stroke-dasharray="${dash}" stroke-dashoffset="${(-off*circ).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${esc(lab)}: ${val}</title></circle>`;
+    off+=frac; return seg;
+  }).join("");
+  const legend=series.map(([lab,val,col])=>`<div style="display:flex;align-items:center;gap:6px;font-size:13px"><span style="width:10px;height:10px;border-radius:2px;background:${col};display:inline-block"></span>${esc(lab)} <b style="margin-left:auto">${val}</b></div>`).join("");
+  const wrap=el(`<div style="display:flex;gap:18px;align-items:center"></div>`);
+  wrap.appendChild(el(`<svg width="140" height="140" viewBox="0 0 140 140">${segs}<text x="70" y="76" text-anchor="middle" fill="#e8edf7" font-size="22" font-weight="700">${total}</text></svg>`));
+  wrap.appendChild(el(`<div style="flex:1;display:flex;flex-direction:column;gap:6px">${legend}</div>`));
+  return wrap;
+}
+function barsSVG(series){ // [[label,value,color],...]
+  const max=Math.max(1,...series.map(s=>s[1])), W=340,H=160,pad=28,bw=(W-pad*2)/series.length;
+  const bars=series.map(([lab,val,col],i)=>{
+    const h=(val/max)*(H-pad*2), x=pad+i*bw+6, y=H-pad-h;
+    return `<g><rect x="${x}" y="${y}" width="${bw-12}" height="${h}" rx="4" fill="${col}"><title>${esc(lab)}: ${val}</title></rect>`+
+           `<text x="${x+(bw-12)/2}" y="${H-pad+14}" text-anchor="middle" fill="#93a2c4" font-size="11">${esc(lab)}</text>`+
+           `<text x="${x+(bw-12)/2}" y="${y-5}" text-anchor="middle" fill="#e8edf7" font-size="11">${val||""}</text></g>`;
+  }).join("");
+  return el(`<svg width="100%" viewBox="0 0 ${W} ${H}"><line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="#263355"/>${bars}</svg>`);
+}
 function debounce(fn,ms){ let h; return (...a)=>{clearTimeout(h);h=setTimeout(()=>fn(...a),ms);}; }
 
 /* ---------------- login ---------------- */

@@ -37,6 +37,7 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
         "license_id": lic.id,
         "license_key": lic.signature,              # signed activation token
         "edition": lic.edition.value,
+        "license_type": lic.license_type.value,
         "expiry": lic.expiry_date.isoformat(),
         "max_devices": lic.max_devices,
         "max_admins": lic.max_admins,
@@ -92,11 +93,18 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
     t = db.get(Tenant, tenant_id)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
-    term = 15 if body.is_demo else body.term_days
+    from ..models import LicenseType
+    if body.is_demo:
+        term = 15
+    elif body.license_type == LicenseType.LIFETIME:
+        term = 365 * 100           # lifetime: effectively non-expiring (support = 1 year, tracked separately)
+    else:
+        term = body.term_days
     features = {**lic_svc.DEFAULT_FEATURES, **(body.features or {})}
     lic = License(
         tenant_id=tenant_id,
         edition=body.edition,
+        license_type=body.license_type,
         start_date=datetime.now(timezone.utc),
         expiry_date=datetime.now(timezone.utc) + timedelta(days=term),
         max_devices=body.max_devices,
@@ -146,9 +154,15 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
     db.add(owner)
 
     # 3. license + key
-    term = 15 if (body.is_demo or body.edition == LicenseEdition.DEMO) else body.term_days
+    from ..models import LicenseType
+    if body.is_demo or body.edition == LicenseEdition.DEMO:
+        term = 15
+    elif body.license_type == LicenseType.LIFETIME:
+        term = 365 * 100
+    else:
+        term = body.term_days
     lic = License(
-        tenant_id=tenant.id, edition=body.edition,
+        tenant_id=tenant.id, edition=body.edition, license_type=body.license_type,
         start_date=datetime.now(timezone.utc),
         expiry_date=datetime.now(timezone.utc) + timedelta(days=term),
         max_devices=body.max_devices, max_admins=body.max_admins,

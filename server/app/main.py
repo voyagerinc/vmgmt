@@ -28,9 +28,10 @@ from .routers import (
     portal,
     reports,
     settings as settings_router,
+    system as system_router,
     users,
 )
-from .services import alert_engine, retention
+from .services import alert_engine, retention, scheduled_reports
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +74,19 @@ def _retention_tick() -> None:
         db.close()
 
 
+def _report_tick(period: str) -> None:
+    db = SessionLocal()
+    try:
+        n = scheduled_reports.run_periodic_report(db, period)
+        db.commit()
+        log.info("%s report generated for %d tenant(s)", period, n)
+    except Exception:
+        db.rollback()
+        log.exception("%s report job failed", period)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
@@ -86,6 +100,9 @@ async def lifespan(app: FastAPI):
     _scheduler.add_job(_maintenance_tick, "interval", seconds=max(60, settings.offline_after_seconds // 2),
                        id="offline_check")
     _scheduler.add_job(_retention_tick, "interval", hours=6, id="retention")
+    _scheduler.add_job(lambda: _report_tick("weekly"), "cron", day_of_week="mon", hour=7,
+                       id="weekly_report")
+    _scheduler.add_job(lambda: _report_tick("monthly"), "cron", day=1, hour=7, id="monthly_report")
     _scheduler.start()
     log.info("Management Server %s started (deployment=%s)", __version__, settings.deployment_model)
     yield

@@ -60,6 +60,11 @@ class LicenseStatus(str, enum.Enum):
     REVOKED = "revoked"
 
 
+class LicenseType(str, enum.Enum):
+    SUBSCRIPTION_MONTHLY = "subscription_monthly"   # per-computer monthly (PRD §4)
+    LIFETIME = "lifetime"                           # one-time, includes 1 year support
+
+
 class DeviceStatus(str, enum.Enum):
     PENDING = "pending"
     ACTIVE = "active"
@@ -137,6 +142,9 @@ class License(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     edition: Mapped[LicenseEdition] = mapped_column(Enum(LicenseEdition), default=LicenseEdition.STANDARD)
+    license_type: Mapped[LicenseType] = mapped_column(
+        Enum(LicenseType, values_callable=lambda e: [m.value for m in e]),
+        default=LicenseType.SUBSCRIPTION_MONTHLY)
     status: Mapped[LicenseStatus] = mapped_column(Enum(LicenseStatus), default=LicenseStatus.ACTIVE)
     # cryptographic activation identity
     activation_secret: Mapped[str] = mapped_column(String(128), default=lambda: uuid.uuid4().hex + uuid.uuid4().hex)
@@ -229,11 +237,15 @@ class Device(Base):
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     hardware: Mapped[dict] = mapped_column(JSON, default=dict)      # cpu/ram/disk snapshot
     policy_version: Mapped[int] = mapped_column(Integer, default=0)
-    # Per-agent data profile (PRD §20): the admin chooses what to collect from THIS device.
+    # Per-agent data profile (PRD §2.5): the admin chooses what to collect from THIS device.
     # Collection is opt-in and privacy-minimizing; only enabled categories are gathered/shown.
+    # keystrokes/email/website/usb are capability flags honored by the agent where the platform
+    # collector/enforcer exists; `screenshot_interval` is seconds (0 = on-request only).
     collection: Mapped[dict] = mapped_column(JSON, default=lambda: {
         "health": True, "software": True, "activity": False,
         "file_events": False, "screenshots": True,
+        "email": False, "website": False, "keystrokes": False, "usb": False,
+        "active_time": True, "screenshot_interval": 0,
     })
 
 

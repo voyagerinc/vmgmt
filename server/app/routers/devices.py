@@ -112,11 +112,17 @@ def set_collection(device_id: str, body: dict, request: Request, db: Session = D
                                                             Role.CUSTOMER_OWNER))):
     """Set the per-agent data profile (PRD §20). Only enabled categories are collected/shown."""
     d = _get_scoped(db, user, device_id)
-    allowed = {"health", "software", "activity", "file_events", "screenshots"}
+    bool_keys = {"health", "software", "activity", "file_events", "screenshots",
+                 "email", "website", "keystrokes", "usb", "active_time"}
     cur = dict(d.collection or {})
     for k, v in body.items():
-        if k in allowed:
+        if k in bool_keys:
             cur[k] = bool(v)
+        elif k == "screenshot_interval":
+            try:
+                cur[k] = max(0, int(v))     # seconds; 0 = on-request only
+            except (TypeError, ValueError):
+                pass
     d.collection = cur
     d.policy_version += 1          # force the agent to re-sync its profile
     audit.record(db, action="device_collection_update", tenant_id=d.tenant_id, actor_id=user.id,

@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     smtp_from: str = "no-reply@endpointmgmt.local"
     smtp_from_name: str = "Endpoint Management Platform"
 
+    # --- Self-update (admin "Pull & restart") ------------------------------
+    # Service name used to restart the server. Defaults per-platform if blank.
+    service_name: str = ""          # EMP_SERVICE_NAME, e.g. "vmgmt" (Linux) / "EndpointMgmtServer"
+    allow_self_update: bool = True  # set false to disable the admin update button entirely
+
     # --- CORS ---------------------------------------------------------------
     cors_origins: str = "*"
 

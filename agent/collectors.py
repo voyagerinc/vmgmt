@@ -171,6 +171,36 @@ def active_window() -> dict | None:
         return None
 
 
+# ----------------------------------------------------------------- active time (PRD §2.1)
+def idle_seconds() -> float | None:
+    """Seconds since last keyboard/mouse input (Windows). Used for active-time tracking.
+
+    Only an idle *duration* is measured — never key contents (keystroke logging is a
+    separate, explicitly-enabled feature that skips password fields)."""
+    if not IS_WIN:
+        return None
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+            return round(millis / 1000.0, 1)
+    except Exception:
+        pass
+    return None
+
+
+def is_active(idle_threshold: int = 60) -> bool:
+    """True if the user interacted within `idle_threshold` seconds."""
+    idle = idle_seconds()
+    return idle is None or idle < idle_threshold
+
+
 # ----------------------------------------------------------------- screenshot (PRD §17)
 def capture_screenshot() -> bytes | None:
     """Capture the primary display to PNG bytes. Only runs for signed, policy-approved jobs."""

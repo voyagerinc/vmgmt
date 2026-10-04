@@ -51,6 +51,7 @@ class Agent:
         self.offline_queue: deque = deque(maxlen=5000)
         self._running = True
         self._last_software_push = 0.0
+        self._last_interval_shot = 0.0
         self._activity_buf: list[dict] = []
 
     # ------------------------------------------------------------- state
@@ -118,6 +119,11 @@ class Agent:
                       "policy_version": self.policy_version, "activity": [], "file_events": []}
         if self.collection.get("health", True):
             body["health"] = collectors.health()
+        if self.collection.get("active_time", True) and body.get("health"):
+            idle = collectors.idle_seconds()
+            if idle is not None:
+                body["health"].setdefault("extra", {})["idle_seconds"] = idle
+                body["health"]["extra"]["active"] = idle < 60
         if self.collection.get("activity", False):
             aw = collectors.active_window()
             if aw:
@@ -199,6 +205,25 @@ class Agent:
         (STATE_DIR / "status.txt").write_text(status, encoding="utf-8")
 
     # ------------------------------------------------------------- main loop
+    def _interval_capture_due(self) -> bool:
+        interval = int(self.collection.get("screenshot_interval", 0) or 0)
+        if interval <= 0 or not self.collection.get("screenshots", True):
+            return False
+        return (time.time() - self._last_interval_shot) >= interval
+
+    def _interval_capture(self) -> None:
+        data = collectors.capture_screenshot()
+        if not data:
+            return
+        try:
+            self.session.post(f"{self.server}/api/agents/evidence",
+                              data={"reason": "interval"},
+                              files={"file": ("shot.png", data, "image/png")},
+                              headers=self._auth_headers(), timeout=60)
+            self._last_interval_shot = time.time()
+        except requests.RequestException as e:
+            log.warning("Interval screenshot upload failed: %s", e)
+
     def run(self) -> None:
         log.info("Agent %s starting on %s", __version__, platform.platform())
         signal.signal(signal.SIGINT, self._stop)
@@ -212,6 +237,8 @@ class Agent:
             while slept < self.heartbeat_interval and self._running:
                 time.sleep(1)
                 slept += 1
+                if self._interval_capture_due():
+                    self._interval_capture()
 
     def _stop(self, *_):
         log.info("Agent stopping")
@@ -273,8 +300,30 @@ def _install_autostart() -> None:
             capture_output=True, text=True,
         )
         log.info("Auto-start installed: %s", dest_exe)
+        _add_firewall_rule(dest_exe)
     except Exception as e:
         log.warning("Auto-start install skipped: %s", e)
+
+
+def _add_firewall_rule(exe: Path) -> None:
+    """Add an outbound Windows Firewall allow rule for the agent->server connection (PRD §3.1).
+
+    Requires admin rights; silently ignored otherwise. This only *allows* our own traffic —
+    it never disables the firewall or opens unrelated ports.
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+    try:
+        subprocess.run(
+            ["netsh", "advfirewall", "firewall", "add", "rule",
+             "name=Voyager Endpoint Agent", "dir=out", "action=allow",
+             f"program={exe}", "enable=yes"],
+            capture_output=True, text=True,
+        )
+        log.info("Firewall rule added for %s", exe)
+    except Exception as e:
+        log.warning("Firewall rule skipped (needs admin): %s", e)
 
 
 def main() -> int:

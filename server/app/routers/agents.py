@@ -237,6 +237,41 @@ async def upload_screenshot(job_id: str, request: Request, file: UploadFile = Fi
     return {"ok": True, "evidence_id": ev.id}
 
 
+@router.post("/evidence")
+async def upload_auto_evidence(request: Request, reason: str = Form("interval"),
+                              file: UploadFile = File(...),
+                              device: Device = Depends(get_agent_device), db: Session = Depends(get_db)):
+    """Store an unsolicited capture (interval/on-alert) when the agent's profile enables it."""
+    prof = device.collection or {}
+    if not prof.get("screenshots", True):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Screenshots disabled for this agent")
+    raw = await file.read()
+    enc = encrypt_bytes(raw)
+    ev_dir = EVIDENCE_DIR / device.tenant_id
+    ev_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        rsn = CaptureReason(reason)
+    except ValueError:
+        rsn = CaptureReason.INTERVAL
+    ev = Evidence(tenant_id=device.tenant_id, device_id=device.id, reason=rsn,
+                  content_type=file.content_type or "image/png", size_bytes=len(raw),
+                  sha256=sha256_hex(raw), storage_path="", captured_at=_now())
+    db.add(ev)
+    db.flush()
+    path = ev_dir / f"{ev.id}.enc"
+    path.write_bytes(enc)
+    ev.storage_path = str(path)
+    from datetime import timedelta
+    from ..models import Tenant
+    tenant = db.get(Tenant, device.tenant_id)
+    days = (tenant.evidence_retention_days if tenant and tenant.evidence_retention_days
+            else settings.default_evidence_retention_days)
+    ev.retention_until = _now() + timedelta(days=days)
+    ev.watermark = f"{device.hostname} · {ev.captured_at.isoformat()} · {ev.id}"
+    db.commit()
+    return {"ok": True, "evidence_id": ev.id}
+
+
 def _reconcile_software(db: Session, tid: str, device: Device, items) -> None:
     existing = {s.name.lower(): s for s in
                 db.query(Software).filter(Software.device_id == device.id).all()}

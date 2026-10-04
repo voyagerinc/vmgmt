@@ -159,6 +159,29 @@ def _pdf(kind: str, headers: list[str], rows: list[list]) -> Response:
 
 
 # ----------------------------------------------------------------- audit log
+@router.post("/reports/summary/run")
+def run_summary(period: str = Query("weekly", pattern="^(weekly|monthly)$"),
+                db: Session = Depends(get_db),
+                user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
+    """Generate the weekly/monthly summary now (also runs automatically on schedule)."""
+    from ..services import scheduled_reports
+    if user.role == Role.PLATFORM_SUPER_ADMIN:
+        n = scheduled_reports.run_periodic_report(db, period)
+        db.commit()
+        return {"ok": True, "tenants": n, "period": period}
+    # company owner: just their tenant
+    from datetime import datetime, timedelta, timezone
+    from ..models import Tenant, Notification
+    t = db.get(Tenant, user.tenant_id)
+    since = datetime.now(timezone.utc) - timedelta(days=7 if period == "weekly" else 30)
+    rows = scheduled_reports._summary_rows(db, t.id, since)
+    body = "\n".join(f"{r[0]}: {r[1]}" for r in rows[1:])
+    db.add(Notification(tenant_id=t.id, kind="report",
+                        title=f"{period.capitalize()} summary — {t.company_name}", body=body))
+    db.commit()
+    return {"ok": True, "period": period, "summary": body}
+
+
 @router.get("/audit")
 def audit_log(tenant_id: str | None = Query(None), action: str | None = None,
               limit: int = Query(200, le=2000), offset: int = 0, db: Session = Depends(get_db),

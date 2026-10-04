@@ -55,6 +55,7 @@ def init_db() -> None:
 _COLUMN_MIGRATIONS = [
     ("devices", "collection", "JSON",
      '\'{"health": true, "software": true, "activity": false, "file_events": false, "screenshots": true}\''),
+    ("licenses", "license_type", "VARCHAR(32)", "'subscription_monthly'"),
 ]
 
 

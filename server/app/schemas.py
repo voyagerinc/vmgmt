@@ -14,6 +14,7 @@ from .models import (
     DeviceStatus,
     LicenseEdition,
     LicenseStatus,
+    LicenseType,
     Role,
 )
 
@@ -67,6 +68,7 @@ class TenantOut(ORM):
 
 class LicenseIn(BaseModel):
     edition: LicenseEdition = LicenseEdition.STANDARD
+    license_type: LicenseType = LicenseType.SUBSCRIPTION_MONTHLY
     term_days: int = 365
     max_devices: int = 25
     max_admins: int = 3
@@ -79,6 +81,7 @@ class LicenseOut(ORM):
     id: str
     tenant_id: str
     edition: LicenseEdition
+    license_type: LicenseType
     status: LicenseStatus
     activated: bool
     start_date: datetime
@@ -117,6 +120,7 @@ class ProvisionIn(BaseModel):
     owner_password: str | None = None        # auto-generated if omitted
     # license
     edition: LicenseEdition = LicenseEdition.STANDARD
+    license_type: LicenseType = LicenseType.SUBSCRIPTION_MONTHLY
     term_days: int = 365
     max_devices: int = 25
     max_admins: int = 3
