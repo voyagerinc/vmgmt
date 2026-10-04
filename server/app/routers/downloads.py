@@ -32,6 +32,7 @@ AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"       # prebuilt standa
 SERVER_EXE = BASE_DIR / "server_dist" / "ManagementServer.exe"  # prebuilt standalone server
 SERVER_SETUP = BASE_DIR / "server_dist" / "Server_Setup.exe"    # double-click wizard installer
 UPDATE_EXE = BASE_DIR / "server_dist" / "update.exe"            # standalone client updater
+SERVER_BUNDLE = BASE_DIR / "server_dist" / "EndpointManagementServer-Universal-Windows.zip"
 _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", "data", "logs", "build", "dist",
                  "agent_dist", "server_dist", "build_srv", "agent_package", ".git", "node_modules"}
 _EXCLUDE_FILES = {".env", ".secret", ".evidence_key", "FIRST_RUN.txt"}
@@ -99,6 +100,16 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
     data = buf.getvalue()
     return Response(content=data, media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{_safe(tenant.company_name)}_VoyagerAgent.zip"'})
+
+
+@router.get("/server-bundle")
+def download_server_bundle(user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
+    """Python-3.8 source bundle for Windows Server 2012 clients (SETUP_AND_RUN.bat / UPDATE.bat)."""
+    if not SERVER_BUNDLE.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No Server 2012 bundle staged on this server")
+    return Response(content=SERVER_BUNDLE.read_bytes(), media_type="application/zip",
+                    headers={"Content-Disposition":
+                             'attachment; filename="EndpointManagementServer-Universal-Windows.zip"'})
 
 
 @router.get("/server")

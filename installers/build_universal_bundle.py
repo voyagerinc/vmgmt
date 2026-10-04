@@ -20,6 +20,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+HERE = Path(__file__).resolve().parent
 SERVER = ROOT / "server"
 AGENT = ROOT / "agent"
 OUT_ZIP = ROOT / "EndpointManagementServer-Universal-Windows.zip"
@@ -189,6 +190,9 @@ def main() -> int:
                     zf.writestr(extra, data)
         for name, data in scaffold.items():            # scaffolding overrides
             zf.writestr(name, data)
+        upd = HERE / "UPDATE.bat"                      # one-click updater for 3.8 clients
+        if upd.exists():
+            zf.writestr("UPDATE.bat", upd.read_bytes())
 
     OUT_ZIP.write_bytes(buf.getvalue())
     print(f"\nWrote {OUT_ZIP}  ({OUT_ZIP.stat().st_size//1024} KB)")

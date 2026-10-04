@@ -35,6 +35,7 @@ REPO_DIR = BASE_DIR.parent
 IS_WIN = platform.system() == "Windows"
 SERVER_EXE = BASE_DIR / "server_dist" / "ManagementServer.exe"
 AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"
+BUNDLE = BASE_DIR / "server_dist" / "EndpointManagementServer-Universal-Windows.zip"
 STAGE_DIR = DATA_DIR / "updates"
 
 
@@ -113,13 +114,17 @@ def updates_latest():
         man["agent"] = {"version": versions.get("agent", __version__),
                         "url": f"{base}/api/updates/download/agent",
                         "sha256": _sha256(AGENT_EXE), "size": AGENT_EXE.stat().st_size}
+    if BUNDLE.exists():
+        man["bundle"] = {"version": versions.get("server", __version__),
+                         "url": f"{base}/api/updates/download/bundle",
+                         "sha256": _sha256(BUNDLE), "size": BUNDLE.stat().st_size}
     return {"code_version": __version__, "components": man}
 
 
 @router.get("/updates/download/{component}")
 def updates_download(component: str):
     """Serve a staged binary to client servers / agents."""
-    path = SERVER_EXE if component == "server" else AGENT_EXE if component == "agent" else None
+    path = {"server": SERVER_EXE, "agent": AGENT_EXE, "bundle": BUNDLE}.get(component)
     if not path or not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No staged {component} build")
     return Response(content=path.read_bytes(), media_type="application/octet-stream",

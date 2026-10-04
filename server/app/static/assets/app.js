@@ -490,7 +490,11 @@ VIEWS.downloads = async (main) => {
   const sb=el(`<button class="btn">⬇ Download Server_Setup.exe</button>`);
   sb.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe");
   s.appendChild(sb);
-  s.appendChild(el(`<p class="muted" style="margin-top:10px">Run it (allow through SmartScreen), set the port + license server URL, click Install. <code>update.exe</code> is installed alongside for one-click updates.</p>`));
+  s.appendChild(el(`<p class="muted" style="margin-top:10px">Run it (allow through SmartScreen), set the port + license server URL, click Install. <code>update.exe</code> is installed alongside for one-click updates. <b>For Windows Server 2016 or newer.</b></p>`));
+  const b12=el(`<button class="btn ghost" style="margin-top:8px">⬇ Windows Server 2012 bundle (.zip)</button>`);
+  b12.onclick=()=>downloadWithAuth("/api/download/server-bundle","EndpointManagementServer-Universal-Windows.zip");
+  s.appendChild(b12);
+  s.appendChild(el(`<p class="muted" style="margin-top:8px">Server 2012 can't run the .exe. This zip runs on Python 3.8: extract → <code>SETUP_AND_RUN.bat</code> to install/run, <code>UPDATE.bat</code> to update from the license server.</p>`));
   grid.appendChild(s);
 
   const a=el(`<div class="card"><h3 style="margin:0 0 8px">2 · Agent software (.exe)</h3>
