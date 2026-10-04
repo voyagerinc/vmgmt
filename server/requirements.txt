@@ -1,15 +1,18 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-SQLAlchemy==2.0.36
-pydantic==2.10.4
-pydantic-settings==2.7.1
-passlib[argon2]==1.7.4
-argon2-cffi==23.1.0
-PyJWT==2.10.1
-python-multipart==0.0.20
-cryptography==44.0.0
-APScheduler==3.11.0
-psycopg2-binary==2.9.10
-reportlab==4.2.5
-openpyxl==3.1.5
-email-validator==2.2.0
+# Minimum versions (not exact pins) so it installs across Python 3.9–3.13.
+# Run `python -m pip install --upgrade pip` first on old machines.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+SQLAlchemy>=2.0
+pydantic>=2.6
+pydantic-settings>=2.2
+passlib[argon2]>=1.7.4
+argon2-cffi>=21.3
+PyJWT>=2.8
+python-multipart>=0.0.9
+cryptography>=42.0
+APScheduler>=3.10
+reportlab>=4.0
+openpyxl>=3.1
+email-validator>=2.1
+# PostgreSQL driver — only needed if EMP_DATABASE_URL points at Postgres.
+psycopg2-binary>=2.9 ; platform_system != "Windows" or python_version >= "3.9"
