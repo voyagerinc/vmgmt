@@ -142,9 +142,11 @@ async def lifespan(app: FastAPI):
                        id="weekly_report")
     _scheduler.add_job(lambda: _report_tick("monthly"), "cron", day=1, hour=7, id="monthly_report")
     if license_sync.is_client_server():
-        _scheduler.add_job(_client_sync_tick, "interval", minutes=10, id="license_sync",
-                           next_run_time=None)
+        # every 10 min (first run ~now, not paused) so cloud resets apply without anyone logging in
+        _scheduler.add_job(_client_sync_tick, "interval", minutes=10, id="license_sync")
     _scheduler.start()
+    if license_sync.is_client_server():
+        _client_sync_tick()      # sync on startup too, so a restart applies a pending reset
     log.info("Management Server %s started (deployment=%s)", __version__, settings.deployment_model)
     yield
     if _scheduler:
