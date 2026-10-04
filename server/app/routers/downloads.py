@@ -30,6 +30,8 @@ PROJECT_ROOT = BASE_DIR.parent              # .../Emp Monitoring
 AGENT_DIR = PROJECT_ROOT / "agent"
 AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"       # prebuilt standalone agent
 SERVER_EXE = BASE_DIR / "server_dist" / "ManagementServer.exe"  # prebuilt standalone server
+SERVER_SETUP = BASE_DIR / "server_dist" / "Server_Setup.exe"    # double-click wizard installer
+UPDATE_EXE = BASE_DIR / "server_dist" / "update.exe"            # standalone client updater
 _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", "data", "logs", "build", "dist",
                  "agent_dist", "server_dist", "build_srv", "agent_package", ".git", "node_modules"}
 _EXCLUDE_FILES = {".env", ".secret", ".evidence_key", "FIRST_RUN.txt"}
@@ -105,10 +107,17 @@ def download_server(db: Session = Depends(get_db),
     """Stream the server software. Prefers the standalone .exe (no Python needed); else source."""
     buf = io.BytesIO()
 
+    # Prefer the double-click wizard installer if it's been built/staged.
+    if SERVER_SETUP.exists():
+        return Response(content=SERVER_SETUP.read_bytes(), media_type="application/octet-stream",
+                        headers={"Content-Disposition": 'attachment; filename="Server_Setup.exe"'})
+
     if SERVER_EXE.exists():
         # Standalone Windows server: Python + all dependencies bundled. Double-click to run.
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(SERVER_EXE, "VoyagerServer/ManagementServer.exe")
+            if UPDATE_EXE.exists():
+                z.write(UPDATE_EXE, "VoyagerServer/update.exe")
             z.writestr("VoyagerServer/.env",
                        "EMP_HOST=0.0.0.0\nEMP_PORT=9084\n"
                        "EMP_SERVER_PUBLIC_URL=http://CHANGE-TO-THIS-SERVER-IP-OR-DOMAIN:9084\n"

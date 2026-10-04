@@ -485,12 +485,12 @@ VIEWS.downloads = async (main) => {
   main.appendChild(el(`<div class="notice">Step 1 — install the <b>server software</b> (once, on your server machine). Step 2 — install the <b>agent software</b> on each employee PC. The agent is pre-configured with this server's address, your license and an enrollment token, so it enrolls automatically. Enrolled agents then appear on your dashboard.</div>`));
   const grid=el(`<div class="grid" style="grid-template-columns:1fr 1fr"></div>`);
 
-  const s=el(`<div class="card"><h3 style="margin:0 0 8px">1 · Server software</h3>
-    <p class="muted">The Management Server (admin console + API). Install once on the machine that will host it.</p></div>`);
-  const sb=el(`<button class="btn">⬇ Download server software (.zip)</button>`);
-  sb.onclick=()=>downloadWithAuth("/api/download/server","EndpointManagementServer.zip");
+  const s=el(`<div class="card"><h3 style="margin:0 0 8px">1 · Server software (Server_Setup.exe)</h3>
+    <p class="muted">Double-click Windows installer — the Management Server + updater are bundled inside. No Python needed. It installs the service, adds a firewall rule and opens the console.</p></div>`);
+  const sb=el(`<button class="btn">⬇ Download Server_Setup.exe</button>`);
+  sb.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe");
   s.appendChild(sb);
-  s.appendChild(el(`<p class="muted" style="margin-top:10px">Includes INSTALL.txt. For a double-click Windows setup, build Server_Setup.exe (installers/README.md).</p>`));
+  s.appendChild(el(`<p class="muted" style="margin-top:10px">Run it (allow through SmartScreen), set the port + license server URL, click Install. <code>update.exe</code> is installed alongside for one-click updates.</p>`));
   grid.appendChild(s);
 
   const a=el(`<div class="card"><h3 style="margin:0 0 8px">2 · Agent software (.exe)</h3>
