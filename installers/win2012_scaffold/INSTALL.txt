@@ -1,0 +1,47 @@
+VOYAGER MANAGEMENT SERVER - WINDOWS (one-click)
+===============================================
+
+INSTALL / RUN
+-------------
+1. Extract this ZIP anywhere (e.g. C:\VoyagerServer).
+2. Right-click  START.bat  ->  "Run as administrator".
+
+That's it. START.bat automatically:
+   - detects your Windows version
+   - installs the correct Python if none is present
+       (Python 3.11 on Windows Server 2016/2019/2022 or Windows 10/11,
+        Python 3.8.10 on Windows Server 2012 / 2012 R2)
+   - installs the application dependencies (binary wheels only)
+   - runs pre-flight checks (doctor.py)
+   - opens TCP 9084 in Windows Firewall
+   - installs + starts the Windows service (auto-starts on boot)
+   - opens the admin console at http://127.0.0.1:9084/
+
+First-run administrator login is written to  server\FIRST_RUN.txt .
+
+UPDATE
+------
+To update to the latest version from your license server:
+   Right-click  UPDATE.bat  ->  "Run as administrator".
+It downloads the latest build from EMP_LICENSE_SERVER (set in server\.env),
+replaces the application (your data and settings are kept), and restarts.
+
+LAN / AGENTS
+------------
+Edit server\.env and set:
+   EMP_HOST=0.0.0.0
+   EMP_SERVER_PUBLIC_URL=http://THIS-SERVER-IP:9084
+   EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:8084
+Then run START.bat again (or restart the service via SERVER_CONTROL.bat).
+
+SERVICE CONTROL
+---------------
+SERVER_CONTROL.bat -> install / start / stop / remove the service.
+Service name: EndpointMgmtServer
+
+NOTES
+-----
+- Internet access is needed the first time (to fetch Python + dependencies).
+- SQLite is the default database; no PostgreSQL needed.
+- Windows Server 2012 cannot run the .exe build; this source bundle is the
+  supported option there. Server 2016+ can also use Server_Setup.exe.

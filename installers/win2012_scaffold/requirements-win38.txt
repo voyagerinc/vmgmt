@@ -1,0 +1,21 @@
+# Windows-compatible pinned server requirements.
+# This file is designed for Windows Server 2012/2016/2022 and Python 3.8+.
+# The setup script uses --only-binary=:all: to prevent accidental source builds.
+fastapi==0.115.6
+uvicorn[standard]==0.33.0
+SQLAlchemy==2.0.36
+pydantic==2.10.4
+pydantic-settings==2.7.1
+passlib[argon2]==1.7.4
+argon2-cffi==23.1.0
+PyJWT==2.9.0
+python-multipart==0.0.20
+cryptography==44.0.0
+APScheduler==3.11.0
+reportlab==4.2.5
+openpyxl==3.1.5
+email-validator==2.2.0
+pywin32==308; sys_platform == "win32"
+psycopg2-binary==2.9.9; sys_platform == "win32" and python_version < "3.9"
+psycopg2-binary==2.9.10; sys_platform == "win32" and python_version >= "3.9"
+psycopg2-binary==2.9.10; sys_platform != "win32"

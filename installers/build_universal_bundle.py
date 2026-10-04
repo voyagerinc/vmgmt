@@ -142,9 +142,14 @@ def _convert_source(src: str) -> str:
     return out
 
 
-def _add_tree(zf: zipfile.ZipFile, base: Path, arc_prefix: str, convert: bool) -> None:
+def _add_tree(zf: zipfile.ZipFile, base: Path, arc_prefix: str, convert: bool,
+              exclude_rel: set | None = None) -> None:
+    exclude_rel = exclude_rel or set()
     for fp in base.rglob("*"):
         if fp.is_dir():
+            continue
+        rel_posix = fp.relative_to(base).as_posix()
+        if rel_posix in exclude_rel:
             continue
         parts = set(fp.relative_to(base).parts)
         if parts & {".venv", "__pycache__", "data", "logs", "server_dist", "agent_dist",
@@ -161,41 +166,49 @@ def _add_tree(zf: zipfile.ZipFile, base: Path, arc_prefix: str, convert: bool) -
             zf.writestr(arc, fp.read_bytes())
 
 
+# Scaffolding lives in the repo (installers/win2012_scaffold/) so the bundle is fully
+# reproducible anywhere, including the Linux cloud. Maps repo file -> path inside the zip.
+SCAFFOLD_DIR = HERE / "win2012_scaffold"
+SCAFFOLD_MAP = {
+    "START.bat": "START.bat",                              # one-click, auto-installs per OS
+    "SETUP_AND_RUN.bat": "SETUP_AND_RUN.bat",
+    "SERVER_CONTROL.bat": "SERVER_CONTROL.bat",
+    "RUN_SERVER.bat": "RUN_SERVER.bat",
+    "INSTALL.txt": "INSTALL.txt",
+    "COMPATIBILITY_NOTES.txt": "COMPATIBILITY_NOTES.txt",
+    "doctor.py": "server/doctor.py",
+    "requirements-win38.txt": "server/requirements.txt",   # 3.8-pinned, overrides converted one
+}
+
+
 def main() -> int:
-    scaffold_zip = Path(sys.argv[1]) if len(sys.argv) > 1 else OUT_ZIP
-    scaffold = {}
-    want = ["RUN_SERVER.bat", "SETUP_AND_RUN.bat", "SERVER_CONTROL.bat", "INSTALL.txt",
-            "COMPATIBILITY_NOTES.txt", "server/doctor.py", "server/requirements.txt"]
-    if scaffold_zip.exists():
-        with zipfile.ZipFile(scaffold_zip) as zin:
-            names = set(zin.namelist())
-            for w in want:
-                if w in names:
-                    scaffold[w] = zin.read(w)
-        print(f"Reused scaffolding from {scaffold_zip.name}: {sorted(scaffold)}")
-    else:
-        print("No scaffold zip found — building source only (add .bat/doctor.py manually).")
+    missing = [f for f in SCAFFOLD_MAP if not (SCAFFOLD_DIR / f).exists()]
+    if missing:
+        print(f"WARNING: missing scaffolding in {SCAFFOLD_DIR}: {missing}")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        _add_tree(zf, SERVER, "server", convert=True)      # 3.8-convert server source
+        # requirements.txt comes from the 3.8-pinned scaffold, so skip the repo one
+        _add_tree(zf, SERVER, "server", convert=True, exclude_rel={"requirements.txt"})
         _add_tree(zf, AGENT, "agent", convert=True)        # 3.8-convert agent source
         for extra in ("generate_agent.py", "README.md"):
             fp = ROOT / extra
             if fp.exists():
-                data = fp.read_bytes()
                 if extra.endswith(".py"):
                     zf.writestr(extra, _convert_source(fp.read_text(encoding="utf-8")))
                 else:
-                    zf.writestr(extra, data)
-        for name, data in scaffold.items():            # scaffolding overrides
-            zf.writestr(name, data)
-        upd = HERE / "UPDATE.bat"                      # one-click updater for 3.8 clients
+                    zf.writestr(extra, fp.read_bytes())
+        # scaffolding + updater from the repo (override converted requirements/doctor)
+        for repo_file, arc in SCAFFOLD_MAP.items():
+            fp = SCAFFOLD_DIR / repo_file
+            if fp.exists():
+                zf.writestr(arc, fp.read_bytes())
+        upd = HERE / "UPDATE.bat"
         if upd.exists():
             zf.writestr("UPDATE.bat", upd.read_bytes())
 
     OUT_ZIP.write_bytes(buf.getvalue())
-    print(f"\nWrote {OUT_ZIP}  ({OUT_ZIP.stat().st_size//1024} KB)")
+    print(f"Wrote {OUT_ZIP}  ({OUT_ZIP.stat().st_size // 1024} KB)")
     return 0
 
 

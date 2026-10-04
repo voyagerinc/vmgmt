@@ -1,0 +1,19 @@
+Compatibility release
+======================
+Target: Windows Server 2012 / 2016 / 2022
+Python baseline: 3.8+
+Default HTTP port: 9084
+Default database: SQLite
+
+Changes:
+- Converted PEP 604 unions (X | None) to typing.Optional for Python 3.8.
+- Converted built-in generics (list/dict/tuple/set) to typing aliases where needed.
+- Replaced the Tenant->License forward relationship with an explicit SQLAlchemy relationship string.
+- Added pywin32 to server requirements for Windows service mode.
+- Added version-aware psycopg2-binary selection so Python 3.8 uses 2.9.9 and Python 3.9+ uses 2.9.10 on Windows.
+- Added doctor.py pre-flight diagnostics.
+- Added SETUP_AND_RUN.bat and SERVER_CONTROL.bat.
+- Added binary-only dependency installation to avoid source builds such as pg_config errors.
+
+This package is designed to make deployment deterministic; it does not silently modify application
+source on the server. The setup script stops on failed checks instead of starting a broken service.
