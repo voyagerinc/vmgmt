@@ -39,6 +39,16 @@ if errorlevel 1 goto :fail
 for /f "tokens=2" %%V in ('"%PY%" -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"') do set "PYVER=%%V"
 echo Detected Python !PYVER!
 
+if not exist ".env" (
+  echo Creating default configuration (.env) ...
+  >  ".env" echo EMP_HOST=0.0.0.0
+  >> ".env" echo EMP_PORT=9084
+  >> ".env" echo EMP_SERVER_PUBLIC_URL=http://THIS-SERVER-IP:9084
+  >> ".env" echo EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:8084
+  >> ".env" echo EMP_DEPLOYMENT_MODEL=on_premise
+  echo   NOTE: edit .env and set EMP_SERVER_PUBLIC_URL to this server's IP.
+)
+
 echo [2/6] Upgrading pip...
 "%PY%" -m pip install --upgrade "pip<26" 
 if errorlevel 1 goto :fail

@@ -55,6 +55,20 @@ if errorlevel 1 ( echo [ERROR] Python is not usable. & pause & exit /b 1 )
 
 cd server
 
+rem ---- create .env on first install (so activation + UPDATE.bat know the license server) ----
+if not exist ".env" (
+  echo Creating default configuration (server\.env) ...
+  >  ".env" echo EMP_HOST=0.0.0.0
+  >> ".env" echo EMP_PORT=9084
+  >> ".env" echo EMP_SERVER_PUBLIC_URL=http://THIS-SERVER-IP:9084
+  >> ".env" echo EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:8084
+  >> ".env" echo EMP_DEPLOYMENT_MODEL=on_premise
+  echo.
+  echo   NOTE: edit server\.env and set EMP_SERVER_PUBLIC_URL to THIS server's IP
+  echo         (the address agents connect to), then run START.bat again.
+  echo.
+)
+
 echo.
 echo [1/5] Upgrading pip ...
 "%PY%" -m pip install --disable-pip-version-check --upgrade "pip<26" >nul 2>&1
