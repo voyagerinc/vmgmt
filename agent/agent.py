@@ -174,6 +174,9 @@ class Agent:
             self.policy_version = resp.get("policy_version", self.policy_version)
             self._save_state()
             log.info("Policy updated: %d rule(s)", len(self.policies))
+        upd = resp.get("agent_update")
+        if upd and FROZEN:
+            self._self_update(upd)
         for job in resp.get("screenshot_jobs", []):
             self._run_screenshot_job(job)
         for sess in resp.get("remote_sessions", []):
@@ -200,6 +203,44 @@ class Agent:
                 log.warning("Evidence upload failed %s: %s", r.status_code, r.text)
         except requests.RequestException as e:
             log.warning("Evidence upload error: %s", e)
+
+    def _self_update(self, upd: dict) -> None:
+        """Download a newer agent .exe from the (client) server, verify it, swap + restart.
+
+        Only runs for the packaged .exe on Windows (PRD §30). Best-effort and idempotent.
+        """
+        import hashlib
+        if upd.get("version") == __version__:
+            return
+        try:
+            cur = Path(sys.executable).resolve()
+            newexe = cur.parent / "VoyagerAgent.new.exe"
+            log.info("Self-update: downloading agent %s", upd.get("version"))
+            r = self.session.get(upd["url"], headers=self._auth_headers(), timeout=120)
+            if not r.ok:
+                log.warning("Self-update download failed: %s", r.status_code)
+                return
+            newexe.write_bytes(r.content)
+            if upd.get("sha256") and hashlib.sha256(r.content).hexdigest() != upd["sha256"]:
+                newexe.unlink(missing_ok=True)
+                log.warning("Self-update checksum mismatch — aborted")
+                return
+            if os.name == "nt":
+                import subprocess
+                bat = cur.parent / "agent_update.bat"
+                bat.write_text(
+                    "@echo off\r\ntimeout /t 3 /nobreak >NUL\r\n"
+                    'schtasks /end /tn "VoyagerEndpointAgent" >NUL 2>&1\r\n'
+                    f'taskkill /f /im "{cur.name}" >NUL 2>&1\r\n'
+                    "timeout /t 2 /nobreak >NUL\r\n"
+                    f'move /y "{newexe}" "{cur}" >NUL\r\n'
+                    f'start "" "{cur}"\r\n', encoding="utf-8")
+                subprocess.Popen(["cmd", "/c", str(bat)],
+                                 creationflags=0x00000008 | 0x00000200, close_fds=True)
+                log.info("Self-update staged; restarting to apply %s", upd.get("version"))
+                self._running = False
+        except Exception as e:
+            log.warning("Self-update error: %s", e)
 
     def _status(self, status: str) -> None:
         (STATE_DIR / "status.txt").write_text(status, encoding="utf-8")

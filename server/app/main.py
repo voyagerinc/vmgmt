@@ -74,6 +74,25 @@ def _retention_tick() -> None:
         db.close()
 
 
+def _record_build_version(db) -> None:
+    """Track the running version + when it changed, so the UI shows version & last-updated date."""
+    from datetime import datetime, timezone
+    from .services import settings_service as ss
+    try:
+        cur = ss.get_setting(db, "build", None) or {}
+        if cur.get("version") != __version__:
+            ss.set_setting(db, "build", None, {
+                "version": __version__,
+                "previous": cur.get("version"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            db.commit()
+            if cur.get("version"):
+                log.info("Updated %s -> %s", cur.get("version"), __version__)
+    except Exception:
+        db.rollback()
+
+
 def _report_tick(period: str) -> None:
     db = SessionLocal()
     try:
@@ -94,6 +113,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_bootstrap(db)
+        _record_build_version(db)
     finally:
         db.close()
     _scheduler = BackgroundScheduler(daemon=True)
@@ -138,7 +158,7 @@ async def security_headers(request: Request, call_next):
 
 # API routers
 for r in (auth, portal, users, agents, devices, directory, inventory, policies, alerts,
-          evidence, reports, settings_router, downloads):
+          evidence, reports, settings_router, downloads, system_router):
     app.include_router(r.router)
 
 

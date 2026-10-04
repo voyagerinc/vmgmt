@@ -682,6 +682,47 @@ VIEWS.audit = async (main) => {
 VIEWS.settings = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Settings"));
 
+  // ---- Software updates (Platform Super Admin) ----
+  if(S.role==="platform_super_admin"){
+    try{
+      const info=await api("/api/system/info");
+      const uc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">Software updates</h3></div>`);
+      uc.appendChild(el(`<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
+        <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Version</div><div style="font-size:22px;font-weight:700">v${esc(info.version)}</div></div>
+        <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Last updated</div><div style="font-size:15px;font-weight:600;padding-top:5px">${info.updated_at?esc(fmtDate(info.updated_at)):"—"}</div></div>
+        <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Role</div><div style="font-size:15px;font-weight:600;padding-top:5px">${esc(info.role.replace("_"," "))}</div></div>
+      </div>`));
+      uc.appendChild(el(`<div class="muted" style="margin-bottom:10px">${info.role==="license_server"?"Updates from GitHub and distributes builds to client servers &amp; agents.":"Updates from the license server ("+esc(info.license_server||"not set")+")."}${info.previous_version?" · previously v"+esc(info.previous_version):""}</div>`));
+      const status=el(`<div class="muted" style="margin:8px 0"></div>`);
+      const bar=el(`<div class="toolbar"></div>`);
+      if(info.role==="license_server"){
+        const b=el(`<button class="btn">⬆ Update from GitHub &amp; restart</button>`);
+        b.onclick=async()=>{ if(!confirm("Pull latest from GitHub and restart the license server?")) return;
+          status.textContent="Pulling from GitHub…";
+          try{ const r=await api("/api/system/update",{method:"POST",body:{pip_install:true,restart:true}});
+            status.innerHTML=r.ok?`✓ ${esc(r.message)}`:`✗ Pull issues — see below`;
+            status.appendChild(el(`<pre class="json" style="margin-top:8px">${esc(r.steps.map(s=>s.cmd+" (exit "+s.code+")\n"+(s.out||"").slice(-500)).join("\n\n"))}</pre>`));
+          }catch(e){ status.textContent="✗ "+e.message; } };
+        bar.appendChild(b);
+      } else {
+        const chk=el(`<button class="btn ghost">Check for updates</button>`);
+        const apply=el(`<button class="btn" style="margin-left:8px">⬆ Update from license server</button>`);
+        chk.onclick=async()=>{ status.textContent="Checking…";
+          try{ const r=await api("/api/system/check-update");
+            status.textContent=r.update_available?`Update available: ${r.latest} (current ${r.current})`:`Up to date (current ${r.current}${r.latest?", latest "+r.latest:""}).`;
+          }catch(e){ status.textContent="✗ "+e.message; } };
+        apply.onclick=async()=>{ if(!confirm("Download the latest build from the license server and restart this server?")) return;
+          status.textContent="Downloading & applying…";
+          try{ const r=await api("/api/system/apply-update",{method:"POST"});
+            status.textContent=(r.ok?"✓ ":"✗ ")+(r.message||""); }catch(e){ status.textContent="✗ "+e.message; } };
+        bar.append(chk,apply);
+      }
+      uc.appendChild(bar); uc.appendChild(status);
+      if(!info.self_update_enabled) uc.appendChild(el(`<div class="muted" style="margin-top:8px">Self-update is disabled (EMP_ALLOW_SELF_UPDATE=false).</div>`));
+      main.appendChild(uc);
+    }catch(e){ /* system routes may be disabled */ }
+  }
+
   // ---- Email (SMTP) setup — sysadmin: global; company owner: their tenant ----
   if(["platform_super_admin","customer_owner"].includes(S.role)){
     const scope = S.role==="platform_super_admin" ? "global" : "";

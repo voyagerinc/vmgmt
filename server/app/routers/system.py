@@ -1,110 +1,250 @@
-"""System maintenance — admin-triggered `git pull` + service restart (platform admin only).
+"""Update distribution chain (PRD §30): GitHub -> License Server -> Client Servers -> Agents.
 
-Powerful by design, so it is restricted to the Platform Super Admin, audited, and can be
-disabled entirely with EMP_ALLOW_SELF_UPDATE=false. The restart is scheduled in a detached
-process so it survives this request's worker being replaced.
+Roles (auto-detected from config):
+  * License server  = EMP_LICENSE_SERVER is blank. It is a git checkout on systemd and
+    updates itself from GitHub ("Update from GitHub & restart"). It also publishes the
+    latest server/agent binaries that client servers and agents pull.
+  * Client server   = EMP_LICENSE_SERVER is set. It checks the license server for a newer
+    build and self-applies (download + swap exe + restart).
+
+All actions are Platform-Super-Admin only, audited, SHA-256 verified, and can be disabled
+with EMP_ALLOW_SELF_UPDATE=false.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import platform
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from .. import __version__, audit
-from ..config import BASE_DIR, settings
+from ..config import BASE_DIR, DATA_DIR, settings
 from ..database import get_db
-from ..deps import client_ip, platform_admin
+from ..deps import client_ip, get_current_user, platform_admin
 from ..models import AdminUser
 
-router = APIRouter(prefix="/api/system", tags=["system"])
+router = APIRouter(prefix="/api", tags=["system"])
 
-REPO_DIR = BASE_DIR.parent          # the git repo root (.../vmgmt)
+REPO_DIR = BASE_DIR.parent
 IS_WIN = platform.system() == "Windows"
+SERVER_EXE = BASE_DIR / "server_dist" / "ManagementServer.exe"
+AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"
+STAGE_DIR = DATA_DIR / "updates"
+
+
+def _is_license_server() -> bool:
+    return not settings.license_server
 
 
 def _service_name() -> str:
-    if settings.service_name:
-        return settings.service_name
-    return "EndpointMgmtServer" if IS_WIN else "vmgmt"
+    return settings.service_name or ("EndpointMgmtServer" if IS_WIN else "vmgmt")
 
 
-def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 120) -> dict:
+def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 300) -> dict:
     try:
         p = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True,
                            text=True, timeout=timeout)
-        return {"cmd": " ".join(cmd), "code": p.returncode,
-                "out": (p.stdout or "") + (p.stderr or "")}
+        return {"cmd": " ".join(cmd), "code": p.returncode, "out": (p.stdout or "") + (p.stderr or "")}
     except Exception as e:
         return {"cmd": " ".join(cmd), "code": -1, "out": f"{type(e).__name__}: {e}"}
 
 
-@router.get("/info")
-def system_info(admin: AdminUser = Depends(platform_admin)):
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _ver_tuple(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in str(v).split(".")[:3])
+    except Exception:
+        return (0,)
+
+
+# --------------------------------------------------------------- shared info
+@router.get("/system/info")
+def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
     git = _run(["git", "-C", str(REPO_DIR), "rev-parse", "--short", "HEAD"], timeout=15)
-    branch = _run(["git", "-C", str(REPO_DIR), "rev-parse", "--abbrev-ref", "HEAD"], timeout=15)
-    is_repo = (REPO_DIR / ".git").exists()
+    from ..services import settings_service as ss
+    binfo = ss.get_setting(db, "build", None) or {}
     return {
         "version": __version__,
+        "updated_at": binfo.get("updated_at"),
+        "previous_version": binfo.get("previous"),
+        "role": "license_server" if _is_license_server() else "client_server",
         "platform": platform.platform(),
-        "is_git_repo": is_repo,
+        "is_git_repo": (REPO_DIR / ".git").exists(),
         "commit": git["out"].strip() if git["code"] == 0 else None,
-        "branch": branch["out"].strip() if branch["code"] == 0 else None,
+        "license_server": settings.license_server or None,
         "service_name": _service_name(),
         "self_update_enabled": settings.allow_self_update,
+        "has_server_exe": SERVER_EXE.exists(),
+        "has_agent_exe": AGENT_EXE.exists(),
     }
 
 
-@router.post("/update")
+# --------------------------------------------------------------- LICENSE SERVER: publish
+@router.get("/updates/latest")
+def updates_latest():
+    """Public manifest of the latest server/agent builds this license server distributes."""
+    man = {}
+    vfile = SERVER_EXE.parent / "version.json"
+    versions = {}
+    if vfile.exists():
+        try:
+            versions = json.loads(vfile.read_text(encoding="utf-8"))
+        except Exception:
+            versions = {}
+    base = settings.server_public_url.rstrip("/")
+    if SERVER_EXE.exists():
+        man["server"] = {"version": versions.get("server", __version__),
+                         "url": f"{base}/api/updates/download/server",
+                         "sha256": _sha256(SERVER_EXE), "size": SERVER_EXE.stat().st_size}
+    if AGENT_EXE.exists():
+        man["agent"] = {"version": versions.get("agent", __version__),
+                        "url": f"{base}/api/updates/download/agent",
+                        "sha256": _sha256(AGENT_EXE), "size": AGENT_EXE.stat().st_size}
+    return {"code_version": __version__, "components": man}
+
+
+@router.get("/updates/download/{component}")
+def updates_download(component: str):
+    """Serve a staged binary to client servers / agents."""
+    path = SERVER_EXE if component == "server" else AGENT_EXE if component == "agent" else None
+    if not path or not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No staged {component} build")
+    return Response(content=path.read_bytes(), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
+
+
+# --------------------------------------------------------------- LICENSE SERVER: self-update
+@router.post("/system/update")
 def pull_and_restart(body: dict | None = None, request: Request = None,
                      db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
-    """git pull (+ optional pip install) then restart the service in a detached process."""
+    """License server: git pull (+optional pip) then restart the service (PRD §30)."""
     if not settings.allow_self_update:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Self-update is disabled on this server")
     if not (REPO_DIR / ".git").exists():
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            f"{REPO_DIR} is not a git checkout — update via your normal deploy process")
+                            "Not a git checkout — update this server via its installer instead")
     body = body or {}
     steps = [_run(["git", "-C", str(REPO_DIR), "pull", "--ff-only"], timeout=120)]
-    if body.get("pip_install"):
+    if body.get("pip_install", True):
         steps.append(_run([sys.executable, "-m", "pip", "install", "-r",
                            str(BASE_DIR / "requirements.txt")], timeout=600))
-
-    restart = bool(body.get("restart", True))
     pull_ok = steps[0]["code"] == 0
-    scheduled = False
-    if restart and pull_ok:
-        scheduled = _schedule_restart()
-
+    scheduled = _schedule_service_restart() if (body.get("restart", True) and pull_ok) else False
     audit.record(db, action="system_update", actor_id=admin.id, actor_email=admin.email,
                  new_value={"pull_code": steps[0]["code"], "restart": scheduled},
                  source_ip=client_ip(request) if request else None)
     db.commit()
-    return {
-        "ok": pull_ok,
-        "steps": steps,
-        "restarting": scheduled,
-        "message": ("Updated. The service is restarting — reload the page in ~15 seconds."
-                    if scheduled else
-                    "Pull finished. Restart was not scheduled (see steps)."),
-    }
+    return {"ok": pull_ok, "steps": steps, "restarting": scheduled,
+            "message": ("Updated from GitHub. Service restarting — reload in ~15s."
+                        if scheduled else "Pull finished; restart not scheduled (see steps).")}
 
 
-def _schedule_restart() -> bool:
-    """Spawn a detached child that restarts the service shortly after we respond."""
+# --------------------------------------------------------------- CLIENT SERVER: check & apply
+@router.get("/system/check-update")
+def check_update(admin: AdminUser = Depends(platform_admin)):
+    """Client server: ask the license server whether a newer build exists."""
+    if _is_license_server():
+        return {"role": "license_server", "current": __version__, "update_available": False,
+                "message": "This is the license server; update it from GitHub."}
+    server = settings.license_server.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{server}/api/updates/latest", timeout=20) as r:
+            man = json.loads(r.read().decode())
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not reach license server: {e}")
+    latest = (man.get("components", {}).get("server") or {}).get("version")
+    available = bool(latest and _ver_tuple(latest) > _ver_tuple(__version__))
+    return {"role": "client_server", "current": __version__, "latest": latest,
+            "update_available": available, "license_server": server}
+
+
+@router.post("/system/apply-update")
+def apply_update(request: Request = None, db: Session = Depends(get_db),
+                 admin: AdminUser = Depends(platform_admin)):
+    """Client server: download the latest ManagementServer.exe from the license server,
+    verify it, and swap+restart via a detached updater (PRD §30). Windows exe only."""
+    if not settings.allow_self_update:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Self-update is disabled on this server")
+    if _is_license_server():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This is the license server")
+    if not getattr(sys, "frozen", False):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Self-apply is only supported for the packaged .exe build")
+    server = settings.license_server.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{server}/api/updates/latest", timeout=20) as r:
+            man = json.loads(r.read().decode())
+        comp = man["components"]["server"]
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not fetch update: {e}")
+
+    STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    newexe = STAGE_DIR / "ManagementServer.new.exe"
+    try:
+        urllib.request.urlretrieve(comp["url"], newexe)
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Download failed: {e}")
+    if comp.get("sha256") and _sha256(newexe) != comp["sha256"]:
+        newexe.unlink(missing_ok=True)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Checksum mismatch — update aborted")
+
+    scheduled = _schedule_exe_swap(newexe)
+    audit.record(db, action="system_update", actor_id=admin.id, actor_email=admin.email,
+                 new_value={"from": __version__, "to": comp.get("version"), "applied": scheduled},
+                 source_ip=client_ip(request) if request else None)
+    db.commit()
+    return {"ok": scheduled, "to_version": comp.get("version"),
+            "message": "Update downloaded and verified. The server is swapping the binary and "
+                       "restarting — reload in ~20s." if scheduled else "Could not schedule swap."}
+
+
+# --------------------------------------------------------------- restart / swap helpers
+def _schedule_service_restart() -> bool:
     svc = _service_name()
     try:
         if IS_WIN:
-            # wait ~3s, then stop+start the Windows service, detached from this process
             cmd = f'ping -n 4 127.0.0.1 >NUL & net stop "{svc}" & net start "{svc}"'
-            DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-            subprocess.Popen(["cmd", "/c", cmd], creationflags=DETACHED, close_fds=True)
+            subprocess.Popen(["cmd", "/c", cmd], creationflags=0x00000008 | 0x00000200, close_fds=True)
         else:
-            cmd = f"sleep 2; systemctl restart {svc}"
-            subprocess.Popen(["/bin/sh", "-c", cmd], start_new_session=True, close_fds=True)
+            subprocess.Popen(["/bin/sh", "-c", f"sleep 2; systemctl restart {svc}"],
+                             start_new_session=True, close_fds=True)
+        return True
+    except Exception:
+        return False
+
+
+def _schedule_exe_swap(newexe: Path) -> bool:
+    """Write an updater that waits for this exe to exit, replaces it, and restarts it."""
+    if not IS_WIN:
+        return False
+    try:
+        cur = Path(sys.executable).resolve()
+        svc = _service_name()
+        bat = STAGE_DIR / "apply_update.bat"
+        bat.write_text(
+            "@echo off\r\n"
+            "timeout /t 3 /nobreak >NUL\r\n"
+            f'net stop "{svc}" >NUL 2>&1\r\n'
+            f'taskkill /f /im "{cur.name}" >NUL 2>&1\r\n'
+            "timeout /t 2 /nobreak >NUL\r\n"
+            f'move /y "{newexe}" "{cur}" >NUL\r\n'
+            f'net start "{svc}" >NUL 2>&1 || start "" "{cur}"\r\n',
+            encoding="utf-8")
+        subprocess.Popen(["cmd", "/c", str(bat)],
+                         creationflags=0x00000008 | 0x00000200, close_fds=True)
         return True
     except Exception:
         return False

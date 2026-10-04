@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from sqlalchemy.orm import Session
 
 from .. import audit
-from ..config import EVIDENCE_DIR, settings
+from ..config import BASE_DIR, EVIDENCE_DIR, settings
 from ..database import get_db
 from ..deps import client_ip, get_agent_device
 from ..models import (
@@ -196,10 +196,43 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         policy_version=device.policy_version,
         policies=policies_payload,
         collection=device.collection or {},
+        agent_update=_agent_update_offer(body.agent_version),
         screenshot_jobs=job_payloads,
         remote_sessions=sess_payloads,
         server_time=_now(),
     )
+
+
+def _agent_update_offer(current: str | None) -> dict | None:
+    """Offer a newer agent build if this (client) server has one staged (PRD §30)."""
+    import hashlib
+    import json as _json
+    exe = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"
+    if not exe.exists():
+        return None
+    vfile = exe.parent / "version.json"
+    ver = None
+    if vfile.exists():
+        try:
+            ver = _json.loads(vfile.read_text(encoding="utf-8")).get("agent")
+        except Exception:
+            ver = None
+    if not ver:
+        return None
+
+    def _t(v):
+        try:
+            return tuple(int(x) for x in str(v).split(".")[:3])
+        except Exception:
+            return (0,)
+    if current and _t(ver) <= _t(current):
+        return None
+    h = hashlib.sha256()
+    with open(exe, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return {"version": ver, "url": f"{settings.server_public_url.rstrip('/')}/api/updates/download/agent",
+            "sha256": h.hexdigest()}
 
 
 @router.post("/screenshot/{job_id}")

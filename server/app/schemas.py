@@ -281,6 +281,7 @@ class HeartbeatOut(BaseModel):
     policy_version: int
     policies: list[dict] | None = None            # pushed when policy_version changed
     collection: dict = Field(default_factory=dict)  # per-agent data profile (what to collect)
+    agent_update: dict | None = None               # {version, url, sha256} when a newer agent exists
     screenshot_jobs: list[dict] = Field(default_factory=list)
     remote_sessions: list[dict] = Field(default_factory=list)
     server_time: datetime
