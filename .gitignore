@@ -44,3 +44,6 @@ agent/*.log
 # server exe build
 server/server_dist/
 server/build_srv/
+
+# distributable zips
+*.zip
