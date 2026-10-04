@@ -508,7 +508,10 @@ VIEWS.licenses = async (main) => {
   main.innerHTML="";
   const isPlatform=S.role==="platform_super_admin";
   const tools=[];
-  if(isPlatform){ const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b); }
+  if(isPlatform){
+    const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b);
+    const a=el(`<button class="btn sm ghost">Activate from license server</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
+  }
   main.appendChild(topbar("Licenses & Tenants",tools));
   const tenants=await api("/api/tenants");
   const c=el(`<div class="card"></div>`);
@@ -563,6 +566,29 @@ Password : ${esc(r.new_password)}</pre>
       <p>${emailLine}</p></div>`), null, "Done");
   }, "Reset");
 }
+async function activateOnline(main){
+  const meta=await api("/api/meta").catch(()=>({}));
+  const f=fields([
+    {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:8084"},
+    {k:"license_id",label:"License ID"},
+    {k:"license_key",label:"License Key",type:"textarea"},
+    {k:"owner_password",label:"Company admin password (set/confirm for this server)",type:"password"},
+  ]);
+  modal("Activate this server from the license server",f,async()=>{
+    const v=f._values();
+    const r=await api("/api/license/activate-online",{method:"POST",body:{
+      license_server:v.license_server.trim(), license_id:v.license_id.trim(),
+      license_key:v.license_key.trim(), owner_password:v.owner_password}});
+    const out=el(`<div><p class="muted">${esc(r.message||"Activated.")}</p>
+      <pre class="json">Company  : ${esc(r.company_name)}
+Username : ${esc(r.owner_email||"—")}
+Password : ${esc(r.owner_password||"(unchanged — use the password you set)")}</pre>
+      <p class="muted">Sign out and sign in with the company admin above to manage this company.</p></div>`);
+    modal("Server activated",out,null,"Done");
+    VIEWS.licenses(main);
+  },"Activate");
+}
+
 function addTenant(main){
   const f=fields([
     {k:"company_name",label:"Company name"},

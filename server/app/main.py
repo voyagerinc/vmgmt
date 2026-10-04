@@ -151,7 +151,8 @@ def health():
 def meta():
     return {"app_name": settings.app_name, "version": __version__,
             "heartbeat_interval": settings.heartbeat_interval_seconds,
-            "server_url": settings.server_public_url}
+            "server_url": settings.server_public_url,
+            "license_server": settings.license_server}
 
 
 # ---- static admin console (SPA) ----

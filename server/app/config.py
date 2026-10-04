@@ -1,6 +1,7 @@
 """Central configuration (PRD §6 deployment models are configuration-driven)."""
 from __future__ import annotations
 
+import os
 import secrets
 import sys
 from functools import lru_cache
@@ -14,9 +15,11 @@ if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).resolve().parent       # folder containing ManagementServer.exe
 else:
     BASE_DIR = Path(__file__).resolve().parent.parent      # .../server
-DATA_DIR = BASE_DIR / "data"
+# EMP_DATA_DIR overrides where the DB/keys/evidence live (lets multiple instances run isolated).
+_data_override = os.environ.get("EMP_DATA_DIR")
+DATA_DIR = Path(_data_override) if _data_override else BASE_DIR / "data"
 EVIDENCE_DIR = DATA_DIR / "evidence"
-LOG_DIR = BASE_DIR / "logs"
+LOG_DIR = (DATA_DIR / "logs") if _data_override else BASE_DIR / "logs"
 for _d in (DATA_DIR, EVIDENCE_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
@@ -49,6 +52,10 @@ class Settings(BaseSettings):
 
     # Evidence encryption key (Fernet). Auto-generated into .evidence_key on first run.
     evidence_key: str = ""
+
+    # --- Licensing (on-prem servers activate against the cloud license server) ---
+    # e.g. http://vmgmt.voyager.co.in:8084  (leave blank on the cloud license server itself)
+    license_server: str = ""
 
     # --- Agent / enrollment -------------------------------------------------
     enroll_token_ttl_hours: int = 72

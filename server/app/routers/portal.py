@@ -237,6 +237,50 @@ def download_license_key(license_id: str, db: Session = Depends(get_db),
                     headers={"Content-Disposition": f'attachment; filename="{safe}.lic"'})
 
 
+@router.post("/licenses/provision-info")
+def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Cloud license server: validate a license key and return the company + owner so an
+    on-premise Management Server can create the local admin account (PRD §8.3). Public —
+    the license key is the proof of authorization."""
+    license_id = (body.get("license_id") or "").strip()
+    key = (body.get("license_key") or "").strip()
+    server_id = (body.get("server_id") or "onprem").strip()
+    lic = db.get(License, license_id)
+    if not lic or not lic_svc.verify_activation(key, lic.id, lic.activation_secret):
+        audit.record(db, action="license_activate", target_type="license", target_id=license_id,
+                     result="failure", source_ip=client_ip(request),
+                     new_value={"via": "provision-info"})
+        db.commit()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid license id or key")
+    st = lic_svc.effective_status(lic)
+    if st != LicenseStatus.ACTIVE:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"License is {st.value}")
+    lic.activated = True
+    lic.activated_server_id = server_id
+    tenant = db.get(Tenant, lic.tenant_id)
+    owner = (db.query(AdminUser)
+             .filter(AdminUser.tenant_id == tenant.id, AdminUser.role == Role.CUSTOMER_OWNER)
+             .order_by(AdminUser.created_at.asc()).first())
+    audit.record(db, action="license_activate", tenant_id=tenant.id, target_type="license",
+                 target_id=lic.id, new_value={"server_id": server_id, "via": "provision-info"},
+                 source_ip=client_ip(request))
+    db.commit()
+    return {
+        "company_name": tenant.company_name,
+        "tenant_id": tenant.id,
+        "contact_email": tenant.contact_email,
+        "owner_email": owner.email if owner else None,
+        "owner_name": owner.full_name if owner else "Account Owner",
+        "edition": lic.edition.value,
+        "license_type": lic.license_type.value,
+        "expiry": lic.expiry_date.isoformat(),
+        "max_devices": lic.max_devices,
+        "max_admins": lic.max_admins,
+        "features": lic.features,
+        "activation_secret": lic.activation_secret,   # so the on-prem server can re-sign locally
+    }
+
+
 @router.get("/license/status")
 def my_license_status(db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
     """Current tenant's license state for the console (activation gating)."""
@@ -286,6 +330,95 @@ def activate_here(body: dict, request: Request, db: Session = Depends(get_db),
                  new_value={"server": settings.server_public_url}, source_ip=client_ip(request))
     db.commit()
     return {"ok": True, "activated": True, "expiry": lic.expiry_date, "max_devices": lic.max_devices}
+
+
+@router.post("/license/activate-online")
+def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
+                    user: AdminUser = Depends(get_current_user)):
+    """On-prem server: activate against the cloud license server, then create the local
+    company + license + company-admin so the cloud-issued admin works here (PRD §8.3)."""
+    import json
+    import urllib.request
+    if user.role != Role.PLATFORM_SUPER_ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the local administrator can activate the server")
+    license_id = (body.get("license_id") or "").strip()
+    key = (body.get("license_key") or "").strip()
+    owner_pw = (body.get("owner_password") or "").strip()
+    server = (body.get("license_server") or settings.license_server or "").strip().rstrip("/")
+    if not (license_id and key):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "License ID and License Key are required")
+    if not server:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "No license server configured (set EMP_LICENSE_SERVER or pass license_server)")
+    if owner_pw:
+        err = validate_password_strength(owner_pw)
+        if err:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+
+    # ---- call the cloud license server ----
+    payload = json.dumps({"license_id": license_id, "license_key": key,
+                          "server_id": settings.server_public_url}).encode()
+    req = urllib.request.Request(f"{server}/api/licenses/provision-info", data=payload,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            info = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()[:300]
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"License server rejected activation: {detail}")
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not reach license server {server}: {e}")
+
+    # ---- create/update local tenant, license and company owner ----
+    tenant = db.get(Tenant, info["tenant_id"])
+    if not tenant:
+        tenant = Tenant(id=info["tenant_id"], company_name=info["company_name"],
+                        contact_email=info.get("contact_email"), deployment_model="on_premise")
+        db.add(tenant)
+        db.flush()
+
+    lic = db.get(License, license_id)
+    exp = datetime.fromisoformat(info["expiry"])
+    from ..models import LicenseType
+    if not lic:
+        lic = License(id=license_id, tenant_id=tenant.id,
+                      edition=LicenseEdition(info["edition"]),
+                      license_type=LicenseType(info.get("license_type", "subscription_monthly")),
+                      expiry_date=exp, max_devices=info["max_devices"], max_admins=info["max_admins"],
+                      features=info.get("features") or {},
+                      activation_secret=info.get("activation_secret") or secrets.token_hex(32),
+                      activated=True, activated_server_id=settings.server_public_url)
+        db.add(lic)
+    else:
+        lic.activated = True
+        lic.expiry_date = exp
+        lic.max_devices = info["max_devices"]
+    lic.status = LicenseStatus.ACTIVE
+    lic.signature = key
+    db.flush()
+
+    owner_email = (info.get("owner_email") or info.get("contact_email") or "").lower()
+    created_pw = None
+    if owner_email:
+        owner = db.query(AdminUser).filter(AdminUser.tenant_id == tenant.id,
+                                           AdminUser.email == owner_email).first()
+        if not owner:
+            created_pw = owner_pw or secrets.token_urlsafe(10)
+            owner = AdminUser(tenant_id=tenant.id, email=owner_email,
+                              full_name=info.get("owner_name", "Account Owner"),
+                              password_hash=hash_password(created_pw), role=Role.CUSTOMER_OWNER)
+            db.add(owner)
+        elif owner_pw:
+            owner.password_hash = hash_password(owner_pw)
+            created_pw = owner_pw
+
+    audit.record(db, action="license_activate", tenant_id=tenant.id, actor_id=user.id,
+                 actor_email=user.email, target_type="license", target_id=lic.id,
+                 new_value={"via": "online", "server": server}, source_ip=client_ip(request))
+    db.commit()
+    return {"ok": True, "company_name": tenant.company_name, "owner_email": owner_email,
+            "owner_password": created_pw,
+            "message": "License activated. Sign in with the company admin account below."}
 
 
 @router.get("/tenants/{tenant_id}/licenses", response_model=list[LicenseOut])
