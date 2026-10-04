@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 import secrets
 import uuid
 
+from pathlib import Path
+
 from .. import audit
-from ..config import settings
+from ..config import BASE_DIR, settings
 from ..database import get_db
 from ..deps import client_ip, get_current_user
 from ..models import AdminUser, PasswordResetToken, Role, Tenant
@@ -188,6 +190,41 @@ def forgot_password(body: dict, request: Request, db: Session = Depends(get_db))
     return _GENERIC
 
 
+@router.post("/local-reset")
+def local_reset(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Offline reset for clients without email: write a one-time reset code to a FILE ON THE
+    SERVER (valid 4h). Only someone with access to the server can read it, which is the proof
+    of authority — the code is never returned in the HTTP response. Public endpoint."""
+    email = (body.get("email") or "").strip().lower()
+    reset_file = BASE_DIR / "PASSWORD_RESET.txt"
+    user = db.query(AdminUser).filter(AdminUser.email == email, AdminUser.is_active == True).first()  # noqa: E712
+    if user:
+        tok = PasswordResetToken(
+            user_id=user.id, token=uuid.uuid4().hex + uuid.uuid4().hex,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=4),
+        )
+        db.add(tok)
+        try:
+            reset_file.write_text(
+                "Voyager Management Server - Password Reset\n"
+                "==========================================\n\n"
+                f"Account     : {user.email}\n"
+                f"Reset code  : {tok.token}\n"
+                f"Valid until : {tok.expires_at:%Y-%m-%d %H:%M} UTC  (4 hours, single use)\n\n"
+                "To finish: on the sign-in page click 'Reset password' -> 'I have a reset code',\n"
+                "paste the code above and set a new password. This code is one-time and expires.\n",
+                encoding="utf-8")
+        except Exception:
+            pass
+        audit.record(db, action="local_reset_issued", tenant_id=user.tenant_id, actor_id=user.id,
+                     actor_email=user.email, result="success", source_ip=client_ip(request))
+        db.commit()
+    return {"ok": True, "file": str(reset_file),
+            "message": ("If the account exists, a one-time reset code was written on THIS SERVER at:\n"
+                        f"{reset_file}\n(valid 4 hours). Open that file on the server, then use "
+                        "'I have a reset code' to set a new password.")}
+
+
 @router.post("/reset-password")
 def reset_password_with_token(body: dict, request: Request, db: Session = Depends(get_db)):
     """Consume a reset token and set a new password. Public (token is the credential)."""
@@ -205,7 +242,13 @@ def reset_password_with_token(body: dict, request: Request, db: Session = Depend
     user.password_hash = hash_password(new_pw)
     user.failed_logins = 0
     user.locked_until = None
+    user.cred_seq = (user.cred_seq or 0) + 1
     row.used = True
+    # remove the on-server reset file so the code cannot be reused
+    try:
+        (BASE_DIR / "PASSWORD_RESET.txt").unlink(missing_ok=True)
+    except Exception:
+        pass
     audit.record(db, action="password_reset_complete", tenant_id=user.tenant_id, actor_id=user.id,
                  actor_email=user.email, result="success", source_ip=client_ip(request))
     db.commit()

@@ -979,7 +979,50 @@ function renderLogin(){
   card.querySelector("#loginBtn").onclick=doLogin;
   card.querySelectorAll("input").forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin();}));
   card.querySelector("#forgotUser").onclick=(e)=>{e.preventDefault();forgotFlow("username");};
-  card.querySelector("#forgotPw").onclick=(e)=>{e.preventDefault();forgotFlow("password");};
+  card.querySelector("#forgotPw").onclick=(e)=>{e.preventDefault();resetChooser();};
+}
+
+function resetChooser(){
+  const body=el(`<div>
+    <p class="muted" style="margin-bottom:12px">How do you want to reset your password?</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn" id="rcEmail">✉ Email me a reset link</button>
+      <button class="btn ghost" id="rcLocal">💾 Local reset (no email)</button>
+      <button class="btn ghost" id="rcCode">I already have a reset code</button>
+    </div></div>`);
+  const bg=modal("Reset password", body, null, "Close");
+  body.querySelector("#rcEmail").onclick=()=>{ bg.remove(); forgotFlow("password"); };
+  body.querySelector("#rcCode").onclick=()=>{ bg.remove(); codeResetForm(); };
+  body.querySelector("#rcLocal").onclick=()=>{ bg.remove(); localResetFlow(); };
+}
+
+function localResetFlow(){
+  const f=fields([{k:"email",label:"Your account email (username)",type:"email"}]);
+  modal("Local reset — write code on the server", f, async()=>{
+    const email=(f._values().email||"").trim();
+    if(!email) throw new Error("Enter an email");
+    const r=await api("/api/auth/local-reset",{method:"POST",body:{email}});
+    const out=el(`<div><div class="notice">${esc(r.message||"")}</div>
+      <p class="muted">Open that file on the server, copy the <b>Reset code</b>, then continue to set a new password.</p></div>`);
+    const b=el(`<button class="btn">I have the code → set new password</button>`);
+    b.onclick=()=>{ document.querySelectorAll(".modal-bg").forEach(x=>x.remove()); codeResetForm(); };
+    out.appendChild(b);
+    modal("Reset code written on the server", out, null, "Close");
+  }, "Create reset code");
+}
+
+function codeResetForm(){
+  const f=fields([
+    {k:"token",label:"Reset code (from email link or the server reset file)",type:"textarea"},
+    {k:"new_password",label:"New password",type:"password"},
+    {k:"confirm",label:"Confirm new password",type:"password"},
+  ]);
+  modal("Set a new password", f, async()=>{
+    const v=f._values();
+    if((v.new_password||"")!==(v.confirm||"")) throw new Error("Passwords do not match");
+    await api("/api/auth/reset-password",{method:"POST",body:{token:(v.token||"").trim(),new_password:v.new_password}});
+    toast("Password updated — please sign in");
+  }, "Update password");
 }
 
 function forgotFlow(kind){

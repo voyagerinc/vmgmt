@@ -47,3 +47,7 @@ server/build_srv/
 
 # distributable zips
 *.zip
+
+# local password-reset code file (transient)
+server/PASSWORD_RESET.txt
+PASSWORD_RESET.txt
