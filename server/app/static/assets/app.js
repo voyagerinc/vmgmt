@@ -85,10 +85,18 @@ function modal(title, bodyNode, onSubmit, submitLabel="Save"){
   const m=el(`<div class="modal"><h3>${esc(title)}</h3></div>`);
   m.appendChild(bodyNode);
   const bar=el(`<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px"></div>`);
-  const cancel=el(`<button class="btn ghost">Cancel</button>`); cancel.onclick=()=>bg.remove();
-  bar.appendChild(cancel);
-  if(onSubmit){ const ok=el(`<button class="btn">${esc(submitLabel)}</button>`);
-    ok.onclick=async()=>{ try{ await onSubmit(); bg.remove(); }catch(e){ toast(e.message,true);} }; bar.appendChild(ok);}
+  if(onSubmit){
+    const cancel=el(`<button class="btn ghost">Cancel</button>`); cancel.onclick=()=>bg.remove();
+    bar.appendChild(cancel);
+    const ok=el(`<button class="btn">${esc(submitLabel)}</button>`);
+    ok.onclick=async()=>{ try{ await onSubmit(); bg.remove(); }catch(e){ toast(e.message,true);} };
+    bar.appendChild(ok);
+  } else {
+    // info-only dialog (e.g. the "new password" result) — a single primary Close/Done button
+    const label = (submitLabel && submitLabel !== "Save") ? submitLabel : "Close";
+    const close=el(`<button class="btn">${esc(label)}</button>`); close.onclick=()=>bg.remove();
+    bar.appendChild(close);
+  }
   m.appendChild(bar); bg.appendChild(m);
   bg.onclick=(e)=>{ if(e.target===bg) bg.remove(); };
   document.body.appendChild(bg); return bg;
