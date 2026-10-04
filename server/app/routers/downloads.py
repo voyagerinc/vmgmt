@@ -28,9 +28,10 @@ router = APIRouter(prefix="/api/download", tags=["downloads"])
 
 PROJECT_ROOT = BASE_DIR.parent              # .../Emp Monitoring
 AGENT_DIR = PROJECT_ROOT / "agent"
-AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"   # prebuilt standalone agent
+AGENT_EXE = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"       # prebuilt standalone agent
+SERVER_EXE = BASE_DIR / "server_dist" / "ManagementServer.exe"  # prebuilt standalone server
 _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", "data", "logs", "build", "dist",
-                 "agent_dist", "agent_package", ".git", "node_modules"}
+                 "agent_dist", "server_dist", "build_srv", "agent_package", ".git", "node_modules"}
 _EXCLUDE_FILES = {".env", ".secret", ".evidence_key", "FIRST_RUN.txt"}
 
 
@@ -101,8 +102,43 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
 @router.get("/server")
 def download_server(db: Session = Depends(get_db),
                     user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
-    """Stream the server software bundle (source + agent + docs) for on-premise install."""
+    """Stream the server software. Prefers the standalone .exe (no Python needed); else source."""
     buf = io.BytesIO()
+
+    if SERVER_EXE.exists():
+        # Standalone Windows server: Python + all dependencies bundled. Double-click to run.
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(SERVER_EXE, "VoyagerServer/ManagementServer.exe")
+            z.writestr("VoyagerServer/.env",
+                       "EMP_HOST=0.0.0.0\nEMP_PORT=9084\n"
+                       "EMP_SERVER_PUBLIC_URL=http://CHANGE-TO-THIS-SERVER-IP-OR-DOMAIN:9084\n"
+                       "EMP_DEPLOYMENT_MODEL=on_premise\n")
+            z.writestr("VoyagerServer/INSTALL.txt",
+                       "VOYAGER ENDPOINT MANAGEMENT SERVER (standalone .exe)\n"
+                       "===================================================\n\n"
+                       "No Python or other software is required - everything is bundled in the .exe.\n\n"
+                       "SETUP:\n"
+                       "  1. Copy this 'VoyagerServer' folder to the server machine.\n"
+                       "  2. Edit .env and set EMP_SERVER_PUBLIC_URL to this server's IP or domain\n"
+                       "     (this is the address agents will connect to), e.g.\n"
+                       "        EMP_SERVER_PUBLIC_URL=http://192.168.1.50:9084\n"
+                       "  3. Double-click ManagementServer.exe  (allow it through Windows SmartScreen).\n"
+                       "     The admin console opens at http://localhost:9084/ and FIRST_RUN.txt is\n"
+                       "     written next to the exe with the first Super Admin login.\n"
+                       "  4. Allow port 9084 in Windows Firewall so agents/other PCs can reach it.\n\n"
+                       "RUN AS A WINDOWS SERVICE (stays up after logout, starts on boot):\n"
+                       "  Open an Administrator Command Prompt in this folder and run:\n"
+                       "     ManagementServer.exe service install\n"
+                       "     ManagementServer.exe service start\n\n"
+                       "DATA: the database, keys and evidence are stored in the 'data' folder next to\n"
+                       "the exe. Back that folder up. Do not delete data\\.secret or data\\.evidence_key.\n")
+        audit.record(db, action="download_server", tenant_id=user.tenant_id, actor_id=user.id,
+                     actor_email=user.email, new_value={"format": "exe"})
+        db.commit()
+        return Response(content=buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="VoyagerServer.zip"'})
+
+    # ---- fallback: source bundle (requires Python) ----
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for base in (BASE_DIR, AGENT_DIR):
             for fp in base.rglob("*"):

@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import secrets
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BASE_DIR = Path(__file__).resolve().parent.parent          # .../server
+# When running as a packaged .exe (PyInstaller), persist data/.env/logs NEXT TO the exe
+# — not inside the temporary _MEIPASS extraction, which is wiped after each run.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent       # folder containing ManagementServer.exe
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent      # .../server
 DATA_DIR = BASE_DIR / "data"
 EVIDENCE_DIR = DATA_DIR / "evidence"
 LOG_DIR = BASE_DIR / "logs"

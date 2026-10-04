@@ -10,9 +10,13 @@ import uvicorn
 from app.config import settings
 
 
+FROZEN = getattr(sys, "frozen", False)
+
+
 def _open_browser() -> None:
+    host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host
     try:
-        webbrowser.open(f"http://{settings.host}:{settings.port}/")
+        webbrowser.open(f"http://{host}:{settings.port}/")
     except Exception:
         pass
 
@@ -27,6 +31,11 @@ if __name__ == "__main__":
 
     no_browser = "--no-browser" in sys.argv
     if not no_browser:
-        Timer(1.5, _open_browser).start()
-    uvicorn.run("app.main:app", host=settings.host, port=settings.port,
-                reload="--reload" in sys.argv, log_level="info")
+        Timer(2.0, _open_browser).start()
+    if FROZEN:
+        # Packaged .exe: pass the app object (import-string reloading isn't available frozen).
+        from app.main import app as application
+        uvicorn.run(application, host=settings.host, port=settings.port, log_level="info")
+    else:
+        uvicorn.run("app.main:app", host=settings.host, port=settings.port,
+                    reload="--reload" in sys.argv, log_level="info")
