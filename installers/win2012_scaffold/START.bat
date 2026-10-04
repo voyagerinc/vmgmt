@@ -87,11 +87,13 @@ echo [5/5] Installing and starting the Windows service ...
 "%PY%" server_service.py install >nul 2>&1
 sc config EndpointMgmtServer start= auto >nul 2>&1
 sc start EndpointMgmtServer >nul 2>&1
+sc query EndpointMgmtServer | find "RUNNING" >nul 2>&1
 if not errorlevel 1 (
   start "" http://127.0.0.1:9084/
   echo.
   echo ================================================================
-  echo   Server is running as a Windows service (auto-starts on boot).
+  echo   Server is running as a Windows SERVICE.
+  echo   It keeps running after you close this window, and auto-starts on boot.
   echo   Admin console : http://127.0.0.1:9084/
   echo   First-run login: server\FIRST_RUN.txt
   echo   To update later: run UPDATE.bat as administrator.
@@ -100,7 +102,18 @@ if not errorlevel 1 (
   goto :eof
 )
 
-echo Service mode unavailable - running in this window instead.
-echo (Keep this window open. Admin console: http://127.0.0.1:9084/)
+echo Service mode unavailable - starting in the BACKGROUND instead ...
+rem detached, no console window -> survives closing this window (pythonw = no window)
+set "PYW=%PY%"
+if /i "%PY%"=="python" ( set "PYW=pythonw" ) else ( set "PYW=%PY:python.exe=pythonw.exe%" )
+start "VoyagerServer" "%PYW%" run_server.py --no-browser
 start "" http://127.0.0.1:9084/
-"%PY%" run_server.py
+echo.
+echo ================================================================
+echo   Server started in the background (survives closing this window).
+echo   Admin console : http://127.0.0.1:9084/
+echo   Logs          : server\logs\server.log
+echo   To stop it: open Task Manager and end the pythonw.exe process,
+echo   or use SERVER_CONTROL.bat.
+echo ================================================================
+pause

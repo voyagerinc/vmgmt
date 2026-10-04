@@ -75,33 +75,25 @@ def _retention_tick() -> None:
 
 
 def _record_build_version(db) -> None:
-    """Track version + git commit + when it changed, so the UI's 'Last updated' reflects any
-    code pull (even within the same version number)."""
-    import subprocess
+    """Stamp version + build id + when it changed, so the UI's 'Last updated' reflects any
+    update — on git servers and on non-git clients (baked app/BUILD)."""
     from datetime import datetime, timezone
-    from .config import BASE_DIR
+    from . import get_build
     from .services import settings_service as ss
-    commit = None
-    try:
-        r = subprocess.run(["git", "-C", str(BASE_DIR.parent), "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            commit = r.stdout.strip()
-    except Exception:
-        pass
+    bid = get_build()
     try:
         cur = ss.get_setting(db, "build", None) or {}
-        changed = cur.get("version") != __version__ or (commit and cur.get("commit") != commit)
+        changed = cur.get("version") != __version__ or (bid and cur.get("commit") != bid)
         if changed:
             ss.set_setting(db, "build", None, {
                 "version": __version__,
-                "commit": commit,
+                "commit": bid,
                 "previous": cur.get("version"),
                 "previous_commit": cur.get("commit"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
             db.commit()
-            log.info("Build changed -> %s (%s)", __version__, commit or "no-git")
+            log.info("Build changed -> %s (%s)", __version__, bid or "no-build-id")
     except Exception:
         db.rollback()
 

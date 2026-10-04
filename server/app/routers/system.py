@@ -23,13 +23,16 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from .. import __version__, audit
+from .. import __version__, audit, get_build
 from ..config import BASE_DIR, DATA_DIR, settings
 from ..database import get_db
-from ..deps import client_ip, get_current_user, platform_admin
-from ..models import AdminUser
+from ..deps import client_ip, get_current_user, platform_admin, require_roles
+from ..models import AdminUser, Role
 
 router = APIRouter(prefix="/api", tags=["system"])
+
+# The client admin (company owner) may view/apply updates on their own server.
+_UPD = require_roles(Role.CUSTOMER_OWNER)   # platform super admin passes implicitly
 
 REPO_DIR = BASE_DIR.parent
 IS_WIN = platform.system() == "Windows"
@@ -80,23 +83,21 @@ def _build_number() -> int | None:
 
 
 @router.get("/system/info")
-def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
-    git = _run(["git", "-C", str(REPO_DIR), "rev-parse", "--short", "HEAD"], timeout=15)
+def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(_UPD)):
     from ..services import settings_service as ss
     binfo = ss.get_setting(db, "build", None) or {}
-    bno = _build_number()
-    commit = git["out"].strip() if git["code"] == 0 else None
-    version_display = f"{__version__}.{bno}" if bno is not None else __version__
+    bid = get_build()      # works on non-git clients (baked app/BUILD) and dev (git)
+    version_display = f"{__version__}+{bid}" if bid else __version__
     return {
         "version": __version__,
         "version_display": version_display,
-        "build_number": bno,
+        "build": bid,
         "updated_at": binfo.get("updated_at"),
         "previous_version": binfo.get("previous"),
         "role": "license_server" if _is_license_server() else "client_server",
         "platform": platform.platform(),
         "is_git_repo": (REPO_DIR / ".git").exists(),
-        "commit": git["out"].strip() if git["code"] == 0 else None,
+        "commit": bid,
         "license_server": settings.license_server or None,
         "service_name": _service_name(),
         "self_update_enabled": settings.allow_self_update,
@@ -171,7 +172,7 @@ def pull_and_restart(body: dict | None = None, request: Request = None,
 
 # --------------------------------------------------------------- CLIENT SERVER: check & apply
 @router.get("/system/check-update")
-def check_update(admin: AdminUser = Depends(platform_admin)):
+def check_update(admin: AdminUser = Depends(_UPD)):
     """Client server: ask the license server whether a newer build exists."""
     if _is_license_server():
         return {"role": "license_server", "current": __version__, "update_available": False,
@@ -190,42 +191,88 @@ def check_update(admin: AdminUser = Depends(platform_admin)):
 
 @router.post("/system/apply-update")
 def apply_update(request: Request = None, db: Session = Depends(get_db),
-                 admin: AdminUser = Depends(platform_admin)):
-    """Client server: download the latest ManagementServer.exe from the license server,
-    verify it, and swap+restart via a detached updater (PRD §30). Windows exe only."""
+                 admin: AdminUser = Depends(_UPD)):
+    """Client server self-update from the license server (PRD §30). Handles both the packaged
+    .exe (swap binary) and the Python source install (replace app code), then restarts."""
     if not settings.allow_self_update:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Self-update is disabled on this server")
     if _is_license_server():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This is the license server")
-    if not getattr(sys, "frozen", False):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "Self-apply is only supported for the packaged .exe build")
     server = settings.license_server.rstrip("/")
     try:
         with urllib.request.urlopen(f"{server}/api/updates/latest", timeout=20) as r:
             man = json.loads(r.read().decode())
-        comp = man["components"]["server"]
+        comps = man.get("components", {})
     except Exception as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not fetch update: {e}")
 
     STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    newexe = STAGE_DIR / "ManagementServer.new.exe"
-    try:
-        urllib.request.urlretrieve(comp["url"], newexe)
-    except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Download failed: {e}")
-    if comp.get("sha256") and _sha256(newexe) != comp["sha256"]:
-        newexe.unlink(missing_ok=True)
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Checksum mismatch — update aborted")
+    frozen = getattr(sys, "frozen", False)
 
-    scheduled = _schedule_exe_swap(newexe)
+    if frozen:
+        comp = comps.get("server")
+        if not comp:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "License server has no .exe build staged")
+        newexe = STAGE_DIR / "ManagementServer.new.exe"
+        try:
+            urllib.request.urlretrieve(comp["url"], newexe)
+        except Exception as e:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Download failed: {e}")
+        if comp.get("sha256") and _sha256(newexe) != comp["sha256"]:
+            newexe.unlink(missing_ok=True)
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Checksum mismatch — update aborted")
+        scheduled = _schedule_exe_swap(newexe)
+    else:
+        # source install: pull the bundle, replace app code (data/.env untouched), restart
+        comp = comps.get("bundle")
+        if not comp:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "License server has no source bundle staged")
+        scheduled = _apply_source_bundle(comp)
+
     audit.record(db, action="system_update", actor_id=admin.id, actor_email=admin.email,
-                 new_value={"from": __version__, "to": comp.get("version"), "applied": scheduled},
-                 source_ip=client_ip(request) if request else None)
+                 new_value={"from": __version__, "to": comp.get("version"), "mode": "exe" if frozen else "source",
+                            "applied": scheduled}, source_ip=client_ip(request) if request else None)
     db.commit()
     return {"ok": scheduled, "to_version": comp.get("version"),
-            "message": "Update downloaded and verified. The server is swapping the binary and "
-                       "restarting — reload in ~20s." if scheduled else "Could not schedule swap."}
+            "message": ("Update downloaded and verified. The server is applying it and restarting "
+                        "— reload in ~20s.") if scheduled else "Could not schedule the update."}
+
+
+def _apply_source_bundle(comp: dict) -> bool:
+    """Download the source bundle, replace server/app + entry files, then restart."""
+    import io
+    import shutil
+    import zipfile
+    try:
+        with urllib.request.urlopen(comp["url"], timeout=120) as r:
+            data = r.read()
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Bundle download failed: {e}")
+    if comp.get("sha256") and hashlib.sha256(data).hexdigest() != comp["sha256"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Checksum mismatch — update aborted")
+    tmp = STAGE_DIR / "bundle"
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        zipfile.ZipFile(io.BytesIO(data)).extractall(tmp)
+    except Exception as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Bundle extract failed: {e}")
+    src_server = tmp / "server"
+    if not (src_server / "app").exists():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bundle missing server/app")
+    # replace app/ and entry files; never touch data/ or .env
+    shutil.copytree(src_server / "app", BASE_DIR / "app", dirs_exist_ok=True)
+    for f in ("run_server.py", "server_service.py", "requirements.txt", "doctor.py"):
+        if (src_server / f).exists():
+            shutil.copy2(src_server / f, BASE_DIR / f)
+    # copy updated .bat helpers next to the install (START.bat/UPDATE.bat/etc.)
+    for bat in tmp.glob("*.bat"):
+        try:
+            shutil.copy2(bat, BASE_DIR.parent / bat.name)
+        except Exception:
+            pass
+    return _schedule_service_restart()
 
 
 # --------------------------------------------------------------- restart / swap helpers

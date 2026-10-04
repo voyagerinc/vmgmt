@@ -230,6 +230,20 @@ def main() -> int:
         upd = HERE / "UPDATE.bat"
         if upd.exists():
             zf.writestr("UPDATE.bat", upd.read_bytes())
+        # bake a unique build id so clients show a changing version + date on every update
+        import datetime as _dt
+        import subprocess as _sp
+        count = "0"
+        try:
+            r = _sp.run(["git", "-C", str(ROOT), "rev-list", "--count", "HEAD"],
+                        capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                count = r.stdout.strip()
+        except Exception:
+            pass
+        build_id = f"b{count}.{_dt.datetime.now():%Y%m%d%H%M}"
+        zf.writestr("server/app/BUILD", build_id)
+        print(f"Build id: {build_id}")
 
     OUT_ZIP.write_bytes(buf.getvalue())
     print(f"Wrote {OUT_ZIP}  ({OUT_ZIP.stat().st_size // 1024} KB)")

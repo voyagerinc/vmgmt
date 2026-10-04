@@ -714,8 +714,8 @@ VIEWS.audit = async (main) => {
 VIEWS.settings = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Settings"));
 
-  // ---- Software updates (Platform Super Admin) ----
-  if(S.role==="platform_super_admin"){
+  // ---- Software updates (platform super admin, and the client admin for their own server) ----
+  if(["platform_super_admin","customer_owner"].includes(S.role)){
     try{
       const info=await api("/api/system/info");
       const uc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">Software updates</h3></div>`);

@@ -51,3 +51,6 @@ server/build_srv/
 # local password-reset code file (transient)
 server/PASSWORD_RESET.txt
 PASSWORD_RESET.txt
+
+# baked build id (generated per build)
+server/app/BUILD

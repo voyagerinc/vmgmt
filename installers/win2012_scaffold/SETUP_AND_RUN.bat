@@ -69,15 +69,24 @@ if errorlevel 1 (
 )
 echo Firewall rule ready.
 
-echo [6/6] Starting Management Server...
+echo [6/6] Installing + starting the Management Server (as a service / background)...
+"%PY%" server_service.py install >nul 2>&1
+sc config EndpointMgmtServer start= auto >nul 2>&1
+sc start EndpointMgmtServer >nul 2>&1
+sc query EndpointMgmtServer | find "RUNNING" >nul 2>&1
+if not errorlevel 1 (
+  echo Server running as a Windows SERVICE - keeps running after you close this window.
+) else (
+  echo Service unavailable - starting in the background instead ^(survives closing this window^) ...
+  set "PYW=%PY%"
+  if /i "%PY%"=="python" ( set "PYW=pythonw" ) else ( set "PYW=%PY:python.exe=pythonw.exe%" )
+  start "VoyagerServer" "!PYW!" run_server.py --no-browser
+)
+start "" http://127.0.0.1:9084/
 echo.
-echo Admin console: http://127.0.0.1:9084/
-echo API health  : http://127.0.0.1:9084/api/health
+echo Admin console: http://127.0.0.1:9084/   (you can close this window now)
 echo.
-echo Keep this window open while testing.
-echo.
-
-"%PY%" run_server.py
+pause
 goto :eof
 
 :fail
