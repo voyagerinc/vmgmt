@@ -117,12 +117,36 @@ def _convert_source(src: str) -> str:
         elif isinstance(node, ast.AnnAssign):
             handle(node.annotation)
 
+    # Builtin-generic subscripts in RUNTIME positions too (e.g. response_model=list[X] in a
+    # route decorator) — these are evaluated on import and break on Python 3.8.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                and node.value.id in TYPING_ALIASES
+                and getattr(node, "end_lineno", None) is not None):
+            conv = _AnnConv()
+            new_node = conv.visit(ast.fix_missing_locations(ast.parse(ast.unparse(node)).body[0].value))
+            used.update(conv.used)
+            new_text = ast.unparse(new_node)
+            s = off(node.lineno, node.col_offset)
+            e = off(node.end_lineno, node.end_col_offset)
+            old_text = src[s:e]
+            if new_text != old_text:
+                edits.append((s, e, new_text))
+
     if not edits and not used:
         return src
 
+    # drop edits fully contained inside another edit (keep the outermost), then dedupe
+    edits = sorted(set(edits), key=lambda x: (x[0], -(x[1])))
+    filtered = []
+    for s, e, t in edits:
+        if any(os_ <= s and e <= oe and (os_, oe) != (s, e) for os_, oe, _ in filtered):
+            continue
+        filtered.append((s, e, t))
+
     # apply edits from the end so offsets stay valid
     out = src
-    for s, e, new_text in sorted(edits, key=lambda x: x[0], reverse=True):
+    for s, e, new_text in sorted(filtered, key=lambda x: x[0], reverse=True):
         out = out[:s] + new_text + out[e:]
 
     # ensure the typing names are imported
