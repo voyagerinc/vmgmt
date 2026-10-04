@@ -571,11 +571,31 @@ function resetPassword(userId, email, tenant){
       body:{new_password:v.new_password||null, email_it:v.email_it==="true"}});
     const emailLine = r.emailed==="smtp" ? `✓ Emailed to <b>${esc(tenant.contact_email||email)}</b>.`
       : (r.emailed==="skipped" ? "" : `⚠ Email not sent (no SMTP) — saved to server outbox.`);
-    modal("New password", el(`<div>
-      <p class="muted">Share this with the user. It is shown only once.</p>
-      <pre class="json">Username : ${esc(r.email)}
+    const out=el(`<div>
+      <p class="muted">Share this with the user. It is shown only once. The client will apply it on its next sync (auto every 10 min, or Settings → Sync from license server now).</p>
+      <pre class="json">Company  : ${esc(tenant.company_name||"")}
+Username : ${esc(r.email)}
 Password : ${esc(r.new_password)}</pre>
-      <p>${emailLine}</p></div>`), null, "Done");
+      <p>${emailLine}</p></div>`);
+    const dl=el(`<button class="btn">⬇ Download credentials (.txt)</button>`);
+    dl.onclick=()=>{
+      const body=`Voyager Management Server - Admin credentials\r\n`+
+        `=============================================\r\n\r\n`+
+        `Company  : ${tenant.company_name||""}\r\n`+
+        `Username : ${r.email}\r\n`+
+        `Password : ${r.new_password}\r\n`+
+        `Issued   : ${new Date().toLocaleString()}\r\n\r\n`+
+        `The client server applies this automatically on its next sync with the license server\r\n`+
+        `(every 10 minutes), or immediately via Settings -> "Sync from license server now".\r\n`+
+        `Then sign in to the client console with the username and password above.\r\n`;
+      const blob=new Blob([body],{type:"text/plain"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url;
+      a.download=`${(tenant.company_name||"client").replace(/[^A-Za-z0-9_-]+/g,"_")}_admin_credentials.txt`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    };
+    out.appendChild(dl);
+    modal("New password", out, null, "Done");
   }, "Reset");
 }
 async function activateOnline(main){
