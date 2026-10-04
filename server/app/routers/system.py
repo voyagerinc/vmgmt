@@ -72,13 +72,25 @@ def _ver_tuple(v: str) -> tuple:
 
 
 # --------------------------------------------------------------- shared info
+def _build_number() -> int | None:
+    r = _run(["git", "-C", str(REPO_DIR), "rev-list", "--count", "HEAD"], timeout=15)
+    if r["code"] == 0 and r["out"].strip().isdigit():
+        return int(r["out"].strip())
+    return None
+
+
 @router.get("/system/info")
 def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
     git = _run(["git", "-C", str(REPO_DIR), "rev-parse", "--short", "HEAD"], timeout=15)
     from ..services import settings_service as ss
     binfo = ss.get_setting(db, "build", None) or {}
+    bno = _build_number()
+    commit = git["out"].strip() if git["code"] == 0 else None
+    version_display = f"{__version__}.{bno}" if bno is not None else __version__
     return {
         "version": __version__,
+        "version_display": version_display,
+        "build_number": bno,
         "updated_at": binfo.get("updated_at"),
         "previous_version": binfo.get("previous"),
         "role": "license_server" if _is_license_server() else "client_server",
@@ -221,11 +233,21 @@ def _schedule_service_restart() -> bool:
     svc = _service_name()
     try:
         if IS_WIN:
-            cmd = f'ping -n 4 127.0.0.1 >NUL & net stop "{svc}" & net start "{svc}"'
-            subprocess.Popen(["cmd", "/c", cmd], creationflags=0x00000008 | 0x00000200, close_fds=True)
+            cmd = f'ping -n 4 127.0.0.1 >NUL & net stop "{svc}" & net start "{svc}" & ' \
+                  f'sc query "{svc}" | find "RUNNING" >NUL || start "" "{sys.executable}" run_server.py --no-browser'
+            subprocess.Popen(["cmd", "/c", cmd], cwd=str(BASE_DIR),
+                             creationflags=0x00000008 | 0x00000200, close_fds=True)
         else:
-            subprocess.Popen(["/bin/sh", "-c", f"sleep 2; systemctl restart {svc}"],
-                             start_new_session=True, close_fds=True)
+            # Try systemd; if there is no such service (nohup/manual run), kill + relaunch.
+            py = sys.executable
+            srv = str(BASE_DIR)
+            script = (
+                f"sleep 2; "
+                f"if systemctl restart {svc} 2>/dev/null; then exit 0; fi; "
+                f"pkill -f 'run_server.py' 2>/dev/null; sleep 2; "
+                f"cd '{srv}' && nohup '{py}' run_server.py --no-browser >> server.out 2>&1 &"
+            )
+            subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True, close_fds=True)
         return True
     except Exception:
         return False

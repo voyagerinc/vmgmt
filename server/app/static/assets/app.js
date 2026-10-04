@@ -692,7 +692,7 @@ VIEWS.settings = async (main) => {
       const info=await api("/api/system/info");
       const uc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">Software updates</h3></div>`);
       uc.appendChild(el(`<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
-        <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Version</div><div style="font-size:22px;font-weight:700">v${esc(info.version)}</div></div>
+        <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Version</div><div style="font-size:22px;font-weight:700">v${esc(info.version_display||info.version)}</div></div>
         <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Build</div><div style="font-size:15px;font-weight:600;padding-top:5px">${esc(info.commit||"—")}</div></div>
         <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Last updated</div><div style="font-size:15px;font-weight:600;padding-top:5px">${info.updated_at?esc(fmtDate(info.updated_at)):"—"}</div></div>
         <div><div class="l" style="font-size:11px;color:var(--muted);text-transform:uppercase">Role</div><div style="font-size:15px;font-weight:600;padding-top:5px">${esc(info.role.replace("_"," "))}</div></div>
