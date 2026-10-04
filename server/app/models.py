@@ -179,6 +179,9 @@ class AdminUser(Base):
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime)
     last_login: Mapped[datetime | None] = mapped_column(DateTime)
+    # Credential version — bumped on every password reset so client servers can pull a
+    # cloud-initiated reset for their company owner (PRD §8). Only the hash is synced.
+    cred_seq: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

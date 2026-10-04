@@ -281,6 +281,32 @@ def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
     }
 
 
+@router.post("/license/sync")
+def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Cloud: a client server refreshes its company owner credentials + entitlements.
+
+    Returns the owner's email, password HASH (never plaintext) and credential version, so a
+    cloud-initiated password reset propagates to the on-prem client (PRD §8). Public — the
+    license key is the proof of authorization."""
+    license_id = (body.get("license_id") or "").strip()
+    key = (body.get("license_key") or "").strip()
+    lic = db.get(License, license_id)
+    if not lic or not lic_svc.verify_activation(key, lic.id, lic.activation_secret):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid license id or key")
+    owner = (db.query(AdminUser)
+             .filter(AdminUser.tenant_id == lic.tenant_id, AdminUser.role == Role.CUSTOMER_OWNER)
+             .order_by(AdminUser.created_at.asc()).first())
+    return {
+        "owner_email": owner.email if owner else None,
+        "owner_password_hash": owner.password_hash if owner else None,
+        "cred_seq": owner.cred_seq if owner else 0,
+        "status": lic_svc.effective_status(lic).value,
+        "expiry": lic.expiry_date.isoformat(),
+        "max_devices": lic.max_devices,
+        "features": lic.features,
+    }
+
+
 @router.get("/license/status")
 def my_license_status(db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
     """Current tenant's license state for the console (activation gating)."""
@@ -419,6 +445,15 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
     return {"ok": True, "company_name": tenant.company_name, "owner_email": owner_email,
             "owner_password": created_pw,
             "message": "License activated. Sign in with the company admin account below."}
+
+
+@router.post("/license/sync-now")
+def license_sync_now(db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
+    """Client server: pull owner-credential resets + entitlements from the license server now."""
+    from ..services import license_sync
+    if user.role not in (Role.PLATFORM_SUPER_ADMIN, Role.CUSTOMER_OWNER):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Not permitted")
+    return license_sync.run_client_sync(db)
 
 
 @router.get("/tenants/{tenant_id}/licenses", response_model=list[LicenseOut])

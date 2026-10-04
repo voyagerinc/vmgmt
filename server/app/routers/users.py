@@ -98,6 +98,7 @@ def reset_password(user_id: str, body: dict | None = None, request: Request = No
     u.password_hash = hash_password(new_pw)
     u.failed_logins = 0
     u.locked_until = None
+    u.cred_seq = (u.cred_seq or 0) + 1      # lets client servers pull this reset
     audit.record(db, action="user_password_reset", tenant_id=u.tenant_id, actor_id=actor.id,
                  actor_email=actor.email, target_type="user", target_id=u.id,
                  new_value={"email": u.email}, source_ip=client_ip(request) if request else None)

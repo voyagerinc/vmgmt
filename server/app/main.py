@@ -31,7 +31,7 @@ from .routers import (
     system as system_router,
     users,
 )
-from .services import alert_engine, retention, scheduled_reports
+from .services import alert_engine, license_sync, retention, scheduled_reports
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,6 +106,19 @@ def _record_build_version(db) -> None:
         db.rollback()
 
 
+def _client_sync_tick() -> None:
+    db = SessionLocal()
+    try:
+        r = license_sync.run_client_sync(db)
+        if r.get("changed"):
+            log.info("License sync applied: %s", r["changed"])
+    except Exception:
+        db.rollback()
+        log.exception("license sync failed")
+    finally:
+        db.close()
+
+
 def _report_tick(period: str) -> None:
     db = SessionLocal()
     try:
@@ -136,6 +149,9 @@ async def lifespan(app: FastAPI):
     _scheduler.add_job(lambda: _report_tick("weekly"), "cron", day_of_week="mon", hour=7,
                        id="weekly_report")
     _scheduler.add_job(lambda: _report_tick("monthly"), "cron", day=1, hour=7, id="monthly_report")
+    if license_sync.is_client_server():
+        _scheduler.add_job(_client_sync_tick, "interval", minutes=10, id="license_sync",
+                           next_run_time=None)
     _scheduler.start()
     log.info("Management Server %s started (deployment=%s)", __version__, settings.deployment_model)
     yield

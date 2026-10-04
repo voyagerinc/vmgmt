@@ -728,6 +728,21 @@ VIEWS.settings = async (main) => {
     }catch(e){ /* system routes may be disabled */ }
   }
 
+  // ---- License sync (client servers: pull credential resets + entitlements from cloud) ----
+  if(["platform_super_admin","customer_owner"].includes(S.role)){
+    try{
+      const m=await api("/api/meta");
+      if(m.license_server){
+        const sc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">License server sync</h3>
+          <div class="muted" style="margin-bottom:10px">This client server syncs company-admin password resets and entitlement changes from <b>${esc(m.license_server)}</b> (automatically every 10 min). If your provider reset your admin password, sync to apply it now.</div></div>`);
+        const sb=el(`<button class="btn">Sync from license server now</button>`);
+        const out=el(`<span class="muted" style="margin-left:10px"></span>`);
+        sb.onclick=async()=>{ out.textContent="Syncing…"; try{ const r=await api("/api/license/sync-now",{method:"POST"}); out.textContent=r.synced?("✓ "+r.detail):("✗ "+r.detail); }catch(e){ out.textContent="✗ "+e.message; } };
+        sc.append(sb,out); main.appendChild(sc);
+      }
+    }catch(e){}
+  }
+
   // ---- Email (SMTP) setup — sysadmin: global; company owner: their tenant ----
   if(["platform_super_admin","customer_owner"].includes(S.role)){
     const scope = S.role==="platform_super_admin" ? "global" : "";
