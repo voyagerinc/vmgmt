@@ -130,7 +130,7 @@ def download_server(db: Session = Depends(get_db),
                    "     .venv\\Scripts\\activate   (Windows)\n"
                    "     pip install -r requirements.txt\n"
                    "     python run_server.py\n"
-                   "3. The admin console opens at http://<this-server>:8080/\n"
+                   "3. The admin console opens at http://<this-server>:9084/\n"
                    "4. Sign in with the company admin credentials issued to you, then activate\n"
                    "   your license (License ID + License Key) on the activation screen.\n"
                    "5. Go to Downloads and get the pre-configured Agent package for your PCs.\n\n"

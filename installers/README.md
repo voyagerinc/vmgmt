@@ -41,7 +41,7 @@ signtool sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 Agent_S
 3. Registers the `EndpointMgmtServer` Windows service (auto-start). SQLite DB is created
    automatically on first start; point `EMP_DATABASE_URL` at PostgreSQL for production.
 4. Optional firewall rule (explicit consent via a Task; removed on uninstall).
-5. Opens `http://127.0.0.1:8080/` — the first-run wizard activates the license and creates the
+5. Opens `http://127.0.0.1:9084/` — the first-run wizard activates the license and creates the
    first Customer Owner (first-run credentials are also written to `FIRST_RUN.txt`).
 
 **Agent_Setup.exe** (`agent.iss`)

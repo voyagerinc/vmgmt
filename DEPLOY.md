@@ -3,7 +3,7 @@
 Deploy the Voyager Endpoint Management Server on a Linux VPS behind Nginx with HTTPS.
 
 ```
-Agents / Browsers ──HTTPS:443──▶ Nginx (TLS) ──HTTP──▶ 127.0.0.1:8084 (app) ──▶ SQLite/Postgres
+Agents / Browsers ──HTTPS:443──▶ Nginx (TLS) ──HTTP──▶ 127.0.0.1:9084 (app) ──▶ SQLite/Postgres
                    vmgmt.voyage.co.in
 ```
 
@@ -60,7 +60,7 @@ sudo cp /root/projects/vmgmt/deploy/vmgmt.service /etc/systemd/system/vmgmt.serv
 sudo systemctl daemon-reload
 sudo systemctl enable --now vmgmt
 sudo systemctl status vmgmt            # should be active (running)
-curl -s http://127.0.0.1:8084/api/health   # {"status":"ok",...}
+curl -s http://127.0.0.1:9084/api/health   # {"status":"ok",...}
 ```
 
 ## 6. Nginx reverse proxy
@@ -81,7 +81,7 @@ curl -s https://vmgmt.voyage.co.in/api/health
 ```
 
 ## 8. Firewall
-Expose only 80/443; keep 8084 private (it is bound to localhost anyway).
+Expose only 80/443; keep 9084 private (it is bound to localhost anyway).
 ```bash
 sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx Full'      # opens 80 + 443

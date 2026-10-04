@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     # --- Identity / deployment ---------------------------------------------
     app_name: str = "Voyager Endpoint Management Platform"
     deployment_model: str = "on_premise"        # on_premise | cloud_vps | hybrid | central_saas
-    server_public_url: str = "http://127.0.0.1:8084"
+    server_public_url: str = "http://127.0.0.1:9084"
     host: str = "127.0.0.1"
-    port: int = 8084
+    port: int = 9084
 
     # --- Database -----------------------------------------------------------
     # SQLite by default (zero-complexity). Set EMP_DATABASE_URL to a Postgres DSN for production.

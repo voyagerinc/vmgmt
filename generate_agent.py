@@ -6,11 +6,11 @@ self-enrolls on first run with no command-line typing (PRD §7.2 Zero-Complexity
 
 Usage (run with the server's venv):
     python generate_agent.py --company "Allfine Industries Pvt Ltd" \
-        --server-url http://192.168.31.113:8080 \
+        --server-url http://192.168.31.113:9084 \
         --edition standard --devices 25 --term-days 365
 
     # or target an existing tenant by id, and reuse its existing license:
-    python generate_agent.py --tenant <TENANT_ID> --server-url http://host:8080
+    python generate_agent.py --tenant <TENANT_ID> --server-url http://host:9084
 """
 from __future__ import annotations
 

@@ -14,7 +14,7 @@ only captures a screenshot for a **signed, policy-approved** job.
 ```powershell
 cd agent
 pip install -r requirements.txt
-python agent.py --server http://127.0.0.1:8080 --license <LICENSE_ID> --token <ENROLL_TOKEN>
+python agent.py --server http://127.0.0.1:9084 --license <LICENSE_ID> --token <ENROLL_TOKEN>
 ```
 After the first enrollment the device identity is stored in
 `%PROGRAMDATA%\EndpointAgent\agent_state.json`; subsequent runs need only `--server` (or run as
