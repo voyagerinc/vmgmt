@@ -75,20 +75,33 @@ def _retention_tick() -> None:
 
 
 def _record_build_version(db) -> None:
-    """Track the running version + when it changed, so the UI shows version & last-updated date."""
+    """Track version + git commit + when it changed, so the UI's 'Last updated' reflects any
+    code pull (even within the same version number)."""
+    import subprocess
     from datetime import datetime, timezone
+    from .config import BASE_DIR
     from .services import settings_service as ss
+    commit = None
+    try:
+        r = subprocess.run(["git", "-C", str(BASE_DIR.parent), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            commit = r.stdout.strip()
+    except Exception:
+        pass
     try:
         cur = ss.get_setting(db, "build", None) or {}
-        if cur.get("version") != __version__:
+        changed = cur.get("version") != __version__ or (commit and cur.get("commit") != commit)
+        if changed:
             ss.set_setting(db, "build", None, {
                 "version": __version__,
+                "commit": commit,
                 "previous": cur.get("version"),
+                "previous_commit": cur.get("commit"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
             db.commit()
-            if cur.get("version"):
-                log.info("Updated %s -> %s", cur.get("version"), __version__)
+            log.info("Build changed -> %s (%s)", __version__, commit or "no-git")
     except Exception:
         db.rollback()
 
