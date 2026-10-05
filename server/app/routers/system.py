@@ -173,68 +173,72 @@ def pull_and_restart(body: dict | None = None, request: Request = None,
 # --------------------------------------------------------------- CLIENT SERVER: check & apply
 @router.get("/system/check-update")
 def check_update(admin: AdminUser = Depends(_UPD)):
-    """Client server: ask the license server whether a newer build exists."""
-    if _is_license_server():
+    """Client server: ask the license server (vmgmt.voyager.co.in) whether a newer build exists."""
+    server = settings.resolve_license_server()
+    if _is_license_server() and not settings.license_server:
         return {"role": "license_server", "current": __version__, "update_available": False,
-                "message": "This is the license server; update it from GitHub."}
-    server = settings.license_server.rstrip("/")
+                "message": "This is the central license server; update it from GitHub.",
+                "license_server": server}
     try:
-        with urllib.request.urlopen(f"{server}/api/updates/latest", timeout=20) as r:
+        req = urllib.request.Request(
+            f"{server}/api/updates/latest",
+            headers={"User-Agent": f"VoyagerClientServer/{__version__}"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
             man = json.loads(r.read().decode())
     except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not reach license server: {e}")
-    latest = (man.get("components", {}).get("server") or {}).get("version")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not reach license server ({server}): {e}")
+    latest = (man.get("components", {}).get("server") or {}).get("version") or man.get("code_version") or man.get("version")
     available = bool(latest and _ver_tuple(latest) > _ver_tuple(__version__))
-    return {"role": "client_server", "current": __version__, "latest": latest,
-            "update_available": available, "license_server": server}
+    return {"role": "client_server", "current": __version__, "latest": latest or __version__,
+            "update_available": available, "license_server": server, "manifest": man}
 
 
 @router.post("/system/apply-update")
 def apply_update(request: Request = None, db: Session = Depends(get_db),
                  admin: AdminUser = Depends(_UPD)):
-    """Client server self-update from the license server (PRD §30). Handles both the packaged
-    .exe (swap binary) and the Python source install (replace app code), then restarts."""
+    """Client server self-update from the license server (vmgmt.voyager.co.in)."""
     if not settings.allow_self_update:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Self-update is disabled on this server")
-    if _is_license_server():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This is the license server")
-    server = settings.license_server.rstrip("/")
+    if _is_license_server() and not settings.license_server:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This is the central license server")
+    server = settings.resolve_license_server()
     try:
-        with urllib.request.urlopen(f"{server}/api/updates/latest", timeout=20) as r:
+        req = urllib.request.Request(
+            f"{server}/api/updates/latest",
+            headers={"User-Agent": f"VoyagerClientServer/{__version__}"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
             man = json.loads(r.read().decode())
         comps = man.get("components", {})
     except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not fetch update: {e}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not fetch update from {server}: {e}")
 
     STAGE_DIR.mkdir(parents=True, exist_ok=True)
     frozen = getattr(sys, "frozen", False)
 
     if frozen:
-        comp = comps.get("server")
-        if not comp:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "License server has no .exe build staged")
+        comp = comps.get("server") or {"url": f"{server}/api/download/server", "version": man.get("code_version", "latest")}
         newexe = STAGE_DIR / "ManagementServer.new.exe"
         try:
             urllib.request.urlretrieve(comp["url"], newexe)
         except Exception as e:
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Download failed: {e}")
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Download failed from {server}: {e}")
         if comp.get("sha256") and _sha256(newexe) != comp["sha256"]:
             newexe.unlink(missing_ok=True)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Checksum mismatch — update aborted")
         scheduled = _schedule_exe_swap(newexe)
     else:
-        # source install: pull the bundle, replace app code (data/.env untouched), restart
-        comp = comps.get("bundle")
-        if not comp:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "License server has no source bundle staged")
+        comp = comps.get("bundle") or {"url": f"{server}/api/download/server-bundle", "version": man.get("code_version", "latest")}
         scheduled = _apply_source_bundle(comp)
 
     audit.record(db, action="system_update", actor_id=admin.id, actor_email=admin.email,
-                 new_value={"from": __version__, "to": comp.get("version"), "mode": "exe" if frozen else "source",
-                            "applied": scheduled}, source_ip=client_ip(request) if request else None)
+                 new_value={"from": __version__, "to": comp.get("version"), "license_server": server,
+                            "mode": "exe" if frozen else "source", "applied": scheduled},
+                 source_ip=client_ip(request) if request else None)
     db.commit()
-    return {"ok": scheduled, "to_version": comp.get("version"),
-            "message": ("Update downloaded and verified. The server is applying it and restarting "
+    return {"ok": scheduled, "to_version": comp.get("version"), "license_server": server,
+            "message": (f"Update downloaded from {server} and verified. Server is applying update & restarting "
                         "— reload in ~20s.") if scheduled else "Could not schedule the update."}
 
 

@@ -212,9 +212,62 @@ function topbar(title, tools){
   if(S.role==="platform_super_admin"){
     const span=el(`<span class="pill">tenant: ${esc(S.activeTenant||"— none —")}</span>`);
     t.querySelector(".tools").appendChild(span);
+  } else {
+    const updBtn=el(`<button class="btn sm ghost" style="color:var(--accent,#38bdf8);border-color:var(--accent,#38bdf8);">⬆ Update Server</button>`);
+    updBtn.onclick=()=>showClientUpdateModal();
+    t.querySelector(".tools").appendChild(updBtn);
   }
   if(tools) tools.forEach(n=>t.querySelector(".tools").appendChild(n));
   return t;
+}
+
+async function showClientUpdateModal(){
+  const body=el(`<div>
+    <p class="muted" style="margin-bottom:12px">Check for server software updates from <b>vmgmt.voyager.co.in</b> (Central License Server).</p>
+    <div id="updStatus" class="notice">Click <b>Check for updates</b> to query vmgmt.voyager.co.in.</div>
+    <div style="display:flex;gap:10px;margin-top:14px;">
+      <button class="btn ghost" id="chkBtn">🔍 Check for updates</button>
+      <button class="btn" id="applyBtn" style="display:none;background:#0284c7;color:#fff;">⬆ Update from vmgmt.voyager.co.in</button>
+    </div>
+  </div>`);
+
+  modal("Client Management Server Update", body, null, "Close");
+  const statusDiv = body.querySelector("#updStatus");
+  const chkBtn = body.querySelector("#chkBtn");
+  const applyBtn = body.querySelector("#applyBtn");
+
+  chkBtn.onclick=async()=>{
+    statusDiv.className="notice";
+    statusDiv.textContent="Checking vmgmt.voyager.co.in for updates...";
+    try {
+      const r=await api("/api/system/check-update");
+      if(r.update_available){
+        statusDiv.className="notice b-high";
+        statusDiv.innerHTML=`<b>Update Available!</b> Latest version: <b>${esc(r.latest)}</b> (Current: ${esc(r.current)}).<br>License Server: <code>${esc(r.license_server)}</code>`;
+        applyBtn.style.display="inline-block";
+      } else {
+        statusDiv.innerHTML=`✓ Server is up to date (Version <b>${esc(r.current)}</b>).<br>License Server: <code>${esc(r.license_server)}</code>`;
+        applyBtn.style.display="none";
+      }
+    } catch(e) {
+      statusDiv.className="notice b-err";
+      statusDiv.textContent="Could not reach license server: "+e.message;
+    }
+  };
+
+  applyBtn.onclick=async()=>{
+    if(!confirm("Download update from vmgmt.voyager.co.in and restart the server?")) return;
+    statusDiv.className="notice";
+    statusDiv.textContent="Downloading update from vmgmt.voyager.co.in and applying... Please wait ~20 seconds.";
+    try {
+      const r=await api("/api/system/apply-update", {method:"POST"});
+      statusDiv.className = r.ok ? "notice b-ok" : "notice b-err";
+      statusDiv.innerHTML = esc(r.message || "Update initiated.");
+    } catch(e) {
+      statusDiv.className="notice b-err";
+      statusDiv.textContent="Update failed: "+e.message;
+    }
+  };
 }
 
 /* ================= VIEWS ================= */

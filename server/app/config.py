@@ -54,8 +54,16 @@ class Settings(BaseSettings):
     evidence_key: str = ""
 
     # --- Licensing (on-prem servers activate against the cloud license server) ---
-    # e.g. http://vmgmt.voyager.co.in:8084  (leave blank on the cloud license server itself)
+    # e.g. http://vmgmt.voyager.co.in:9084 (leave blank on the cloud license server itself)
     license_server: str = ""
+
+    def resolve_license_server(self) -> str:
+        srv = (self.license_server or "").strip()
+        if not srv:
+            srv = "http://vmgmt.voyager.co.in:9084"
+        if not srv.startswith("http://") and not srv.startswith("https://"):
+            srv = "http://" + srv
+        return srv.rstrip("/")
 
     # --- Agent / enrollment -------------------------------------------------
     enroll_token_ttl_hours: int = 72
