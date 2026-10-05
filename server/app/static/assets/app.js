@@ -551,6 +551,7 @@ VIEWS.licenses = async (main) => {
   const tools=[];
   if(isPlatform){
     const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b);
+    const dlSrv=el(`<button class="btn sm ghost">⬇ Download Client Server Setup</button>`); dlSrv.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe"); tools.push(dlSrv);
     const a=el(`<button class="btn sm ghost">Activate from license server</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
   }
   main.appendChild(topbar("Licenses & Tenants",tools));
