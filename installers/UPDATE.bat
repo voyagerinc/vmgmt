@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 title Voyager Management Server - Update from License Server
 
 echo ================================================================
@@ -31,18 +31,22 @@ if not defined LIC (
 set "LIC=%LIC: =%"
 echo License server: %LIC%
 
-rem --- detect Python (same rule as SETUP_AND_RUN.bat) ---
+rem --- detect Python (check server venv, D:\Python, or system python) ---
 set "PY="
-if exist "D:\Python\python.exe" set "PY=D:\Python\python.exe"
+if exist "%~dp0server\.venv\Scripts\python.exe" set "PY=%~dp0server\.venv\Scripts\python.exe"
+if not defined PY if exist "D:\Python\python.exe" set "PY=D:\Python\python.exe"
 if not defined PY ( where python >nul 2>&1 & if not errorlevel 1 set "PY=python" )
 
-set "TMPZIP=%TEMP%\voyager_update.zip"
-set "TMPDIR=%TEMP%\voyager_update"
+set "TMPZIP=%~dp0voyager_update.zip"
+set "TMPDIR=%~dp0voyager_update_tmp"
 
 echo.
 echo [1/5] Downloading latest bundle ...
 powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '%LIC%/api/updates/download/bundle' -OutFile '%TMPZIP%' } catch { exit 1 }"
-if errorlevel 1 ( echo [ERROR] Download failed. Check the license server is reachable. & pause & exit /b 1 )
+if not exist "%TMPZIP%" (
+  echo [ERROR] Download failed from %LIC%/api/updates/download/bundle.
+  pause & exit /b 1
+)
 
 echo [2/5] Stopping service ...
 net stop EndpointMgmtServer >nul 2>&1
@@ -52,7 +56,7 @@ echo [3/5] Extracting (your data and .env are preserved) ...
 if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%"
 mkdir "%TMPDIR%" >nul 2>&1
 
-rem --- Python built-in zipfile (works on Server 2012 / 2016 / 2019 / 2022 without PowerShell dependencies) ---
+rem --- Extract using Python zipfile module ---
 if defined PY (
   "%PY%" -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "%TMPZIP%" "%TMPDIR%" >nul 2>&1
 )
@@ -60,21 +64,26 @@ if not exist "%TMPDIR%\server\app\main.py" (
   python -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "%TMPZIP%" "%TMPDIR%" >nul 2>&1
 )
 if not exist "%TMPDIR%\server\app\main.py" (
-  rem --- PowerShell .NET / Shell COM fallback for Server 2012 ---
-  powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{$sh=New-Object -ComObject Shell.Application;$sh.NameSpace('%TMPDIR%').CopyHere($sh.NameSpace('%TMPZIP%').Items(),20);Start-Sleep -Seconds 5}" >nul 2>&1
+  powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{}" >nul 2>&1
 )
+
 if not exist "%TMPDIR%\server\app\main.py" (
-  rem --- PowerShell Expand-Archive (Server 2016+) ---
-  powershell -NoProfile -Command "Expand-Archive -Force -Path '%TMPZIP%' -DestinationPath '%TMPDIR%'" >nul 2>&1
+  echo [ERROR] Could not extract update zip.
+  echo ZIP Path: %TMPZIP%
+  echo DIR Path: %TMPDIR%
+  pause & exit /b 1
 )
-if not exist "%TMPDIR%\server\app\main.py" ( echo [ERROR] Extract failed. Python or PowerShell zip extraction unavailable. & pause & exit /b 1 )
 
 rem --- replace application code only; never touch server\data or server\.env ---
 robocopy "%TMPDIR%\server\app" "server\app" /MIR /NFL /NDL /NJH /NJS /NC /NS >nul
-copy /y "%TMPDIR%\server\run_server.py"     "server\run_server.py"     >nul 2>&1
-copy /y "%TMPDIR%\server\server_service.py" "server\server_service.py" >nul 2>&1
-copy /y "%TMPDIR%\server\requirements.txt"  "server\requirements.txt"  >nul 2>&1
-copy /y "%TMPDIR%\server\doctor.py"         "server\doctor.py"         >nul 2>&1
+if exist "%TMPDIR%\server\run_server.py" copy /y "%TMPDIR%\server\run_server.py" "server\run_server.py" >nul
+if exist "%TMPDIR%\server\server_service.py" copy /y "%TMPDIR%\server\server_service.py" "server\server_service.py" >nul
+if exist "%TMPDIR%\server\requirements.txt" copy /y "%TMPDIR%\server\requirements.txt" "server\requirements.txt" >nul
+if exist "%TMPDIR%\server\doctor.py" copy /y "%TMPDIR%\server\doctor.py" "server\doctor.py" >nul
+
+rem clean up temp artifacts
+if exist "%TMPZIP%" del /f /q "%TMPZIP%" >nul 2>&1
+if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%" >nul 2>&1
 
 echo [4/5] Updating dependencies ...
 if defined PY (
