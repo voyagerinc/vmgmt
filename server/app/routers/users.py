@@ -3,16 +3,17 @@ from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from .. import audit
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_user, require_roles, resolve_tenant
-from ..models import AdminUser, Role, Tenant
+from ..models import AdminUser, PasswordResetToken, Role, Tenant
 from ..schemas import UserIn, UserOut
-from ..security import hash_password, validate_password_strength
+from ..security import hash_password, sign_license, validate_password_strength
 from ..services import email_service
 from ..services import license_service as lic_svc
 from ..services import settings_service as ss
@@ -27,6 +28,66 @@ def list_users(tenant_id: str | None = Query(None), db: Session = Depends(get_db
                user: AdminUser = Depends(get_current_user)):
     tid = resolve_tenant(user, tenant_id)
     return db.query(AdminUser).filter(AdminUser.tenant_id == tid).all()
+
+
+@router.post("/{user_id}/download-reset-key")
+@router.get("/{user_id}/download-reset-key")
+def download_reset_key(user_id: str, request: Request = None, db: Session = Depends(get_db),
+                       actor: AdminUser = Depends(_MANAGE)):
+    """Generate and stream a signed Password Reset Key File (.txt) from the License Server."""
+    u = db.get(AdminUser, user_id)
+    if not u or (actor.role != Role.PLATFORM_SUPER_ADMIN and u.tenant_id != actor.tenant_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+
+    tenant = db.get(Tenant, u.tenant_id)
+    company_name = tenant.company_name if tenant else "Default"
+
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=7)
+
+    payload = {
+        "user_id": u.id,
+        "email": u.email,
+        "tenant_id": u.tenant_id,
+        "kind": "pw_reset",
+        "iat": now.isoformat(),
+        "exp": exp.isoformat()
+    }
+    signed_token = sign_license(payload)
+
+    tok = PasswordResetToken(user_id=u.id, token=signed_token, expires_at=exp)
+    db.add(tok)
+    u.cred_seq = (u.cred_seq or 0) + 1
+    audit.record(db, action="download_reset_key", tenant_id=u.tenant_id, actor_id=actor.id,
+                 actor_email=actor.email, target_type="user", target_id=u.id,
+                 new_value={"email": u.email}, source_ip=client_ip(request) if request else None)
+    db.commit()
+
+    txt_content = (
+        "================================================================\n"
+        "VOYAGER INC - LICENSE SERVER PASSWORD RESET KEY FILE\n"
+        "================================================================\n"
+        f"Company     : {company_name}\n"
+        f"Username    : {u.email}\n"
+        f"Tenant ID   : {u.tenant_id}\n"
+        f"Issued At   : {now:%Y-%m-%d %H:%M:%S} UTC\n"
+        f"Expires At  : {exp:%Y-%m-%d %H:%M:%S} UTC (7 Days)\n"
+        "================================================================\n"
+        "INSTRUCTIONS FOR CLIENT MANAGEMENT SERVER:\n"
+        "  1. Open your Client Management Server login console.\n"
+        "  2. Click 'Forgot password?'.\n"
+        "  3. Select 'Import Reset Key File (.txt)' and choose this file.\n"
+        "  4. Set your new password to immediately restore admin access.\n"
+        "================================================================\n"
+        "--- BEGIN RESET PAYLOAD ---\n"
+        f"{signed_token}\n"
+        "--- END RESET PAYLOAD ---\n"
+    )
+
+    safe_company = "".join(c for c in company_name if c.isalnum() or c in " _-").strip() or "client"
+    filename = f"RESET_KEY_{safe_company}_{u.email}.txt"
+    return Response(content=txt_content, media_type="text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.post("", response_model=UserOut)

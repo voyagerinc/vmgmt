@@ -140,9 +140,19 @@ function renderShell(){
   app.innerHTML="";
   const shell=el(`<div class="shell"></div>`);
   const side=el(`<div class="side"></div>`);
-  side.appendChild(el(`<div class="brand"><div class="logo"><img src="/assets/logo.jpg" alt="Voyager"/></div><div>Voyager<br><span class="brand-sub">Endpoint Mgmt</span></div></div>`));
+
+  const brandSub = isPlatform
+    ? `<span class="pill" style="background:#0284c7;color:#fff;font-size:0.7rem;padding:2px 6px;">License Server Panel</span>`
+    : `<span class="pill" style="background:#059669;color:#fff;font-size:0.7rem;padding:2px 6px;">Client Server Panel</span>`;
+
+  side.appendChild(el(`<div class="brand"><div class="logo"><img src="/assets/logo.jpg" alt="Voyager"/></div><div>Voyager Inc<br>${brandSub}</div></div>`));
   const nav=el(`<div class="nav"></div>`);
-  NAV.forEach(([k,label,icon])=>{ nav.appendChild(el(`<a href="#${k}" data-k="${k}"><span>${icon}</span>${esc(label)}</a>`)); });
+
+  const items = isPlatform
+    ? [["licenses","Licenses & Tenants","🔑"],["downloads","Server Downloads","⬇"],["audit","Audit Logs","❏"],["settings","Settings","⋯"]]
+    : NAV.filter(([k])=>!["licenses"].includes(k));
+
+  items.forEach(([k,label,icon])=>{ nav.appendChild(el(`<a href="#${k}" data-k="${k}"><span>${icon}</span>${esc(label)}</a>`)); });
   side.appendChild(nav);
   side.appendChild(el(`<div class="who">${esc(S.name||"user")}<br><span class="pill">${esc(S.role)}</span>
     <div style="margin-top:10px"><button class="btn ghost sm" id="logoutBtn">Sign out</button></div></div>`));
@@ -486,31 +496,50 @@ VIEWS.reports = async (main) => {
 };
 
 VIEWS.downloads = async (main) => {
-  main.innerHTML=""; main.appendChild(topbar("Downloads"));
+  main.innerHTML=""; main.appendChild(topbar("Software Downloads & 3-Tier Architecture"));
+
+  main.appendChild(el(`<div class="card" style="background: var(--bg-alt,#1e293b); border: 1px solid var(--border,#334155); margin-bottom: 20px;">
+    <h3 style="margin:0 0 10px; color: var(--accent,#38bdf8);">🌐 3-Tier Architecture Overview</h3>
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 15px;">
+      <div style="background: rgba(255,255,255,0.04); padding: 12px; border-radius: 6px;">
+        <strong style="color: #60a5fa">Part 1: License Server (Voyager Inc)</strong>
+        <p class="muted" style="font-size: 0.85rem; margin-top: 5px;">Central licensing server managed by Voyager Inc. Issues tenant licenses & distributes the Client Server installer package.</p>
+      </div>
+      <div style="background: rgba(255,255,255,0.04); padding: 12px; border-radius: 6px;">
+        <strong style="color: #34d399">Part 2: Client Management Server</strong>
+        <p class="muted" style="font-size: 0.85rem; margin-top: 5px;">On-premise or cloud server software installed by customer. Activated via license key; generates pre-configured Endpoint Agents.</p>
+      </div>
+      <div style="background: rgba(255,255,255,0.04); padding: 12px; border-radius: 6px;">
+        <strong style="color: #f472b6">Part 3: Endpoint Client (Agent)</strong>
+        <p class="muted" style="font-size: 0.85rem; margin-top: 5px;">Lightweight Windows agent installed on employee PCs. Automatically self-enrolls & streams health, activity, and evidence to Client Server.</p>
+      </div>
+    </div>
+  </div>`));
+
   if(S.role==="platform_super_admin"){
-    main.appendChild(el(`<div class="notice">Downloads are per-company. Select a tenant in <a href="#licenses">Licenses & Tenants</a> to download their pre-configured agent, or sign in as the company owner.</div>`));
+    main.appendChild(el(`<div class="notice">You are logged in as <b>Platform Super Admin (Voyager Inc)</b>. You can download the Client Server setup package below to distribute to tenant customers.</div>`));
   }
-  main.appendChild(el(`<div class="notice">Step 1 — install the <b>server software</b> (once, on your server machine). Step 2 — install the <b>agent software</b> on each employee PC. The agent is pre-configured with this server's address, your license and an enrollment token, so it enrolls automatically. Enrolled agents then appear on your dashboard.</div>`));
+
   const grid=el(`<div class="grid" style="grid-template-columns:1fr 1fr"></div>`);
 
-  const s=el(`<div class="card"><h3 style="margin:0 0 8px">1 · Server software (Server_Setup.exe)</h3>
-    <p class="muted">Double-click Windows installer — the Management Server + updater are bundled inside. No Python needed. It installs the service, adds a firewall rule and opens the console.</p></div>`);
+  const s=el(`<div class="card"><h3 style="margin:0 0 8px">1 · Client Management Server Software</h3>
+    <p class="muted">Double-click Windows installer (<b>Server_Setup.exe</b>) — Management Server + updater bundled inside. No Python required on the customer server machine.</p></div>`);
   const sb=el(`<button class="btn">⬇ Download Server_Setup.exe</button>`);
   sb.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe");
   s.appendChild(sb);
-  s.appendChild(el(`<p class="muted" style="margin-top:10px">Run it (allow through SmartScreen), set the port + license server URL, click Install. <code>update.exe</code> is installed alongside for one-click updates. <b>For Windows Server 2016 or newer.</b></p>`));
-  const b12=el(`<button class="btn ghost" style="margin-top:8px">⬇ Windows Server 2012 bundle (.zip)</button>`);
+  s.appendChild(el(`<p class="muted" style="margin-top:10px">Installs service, adds firewall rule, opens admin console. <code>update.exe</code> included for one-click updates from Voyager License Server. <b>For Windows Server 2016+ / Windows 10+</b></p>`));
+  const b12=el(`<button class="btn ghost" style="margin-top:8px">⬇ Universal Zip Bundle (Python 3.8 / Server 2012)</button>`);
   b12.onclick=()=>downloadWithAuth("/api/download/server-bundle","EndpointManagementServer-Universal-Windows.zip");
   s.appendChild(b12);
-  s.appendChild(el(`<p class="muted" style="margin-top:8px">Server 2012 can't run the .exe. This zip runs on Python 3.8: extract → <code>SETUP_AND_RUN.bat</code> to install/run, <code>UPDATE.bat</code> to update from the license server.</p>`));
+  s.appendChild(el(`<p class="muted" style="margin-top:8px">Universal zip package with <code>SETUP_AND_RUN.bat</code> and <code>UPDATE.bat</code> scripts.</p>`));
   grid.appendChild(s);
 
-  const a=el(`<div class="card"><h3 style="margin:0 0 8px">2 · Agent software (.exe)</h3>
-    <p class="muted">A standalone <b>VoyagerAgent.exe</b> — Python and every dependency are bundled inside, so <b>nothing needs installing</b> on the employee PC. Pre-configured with your server address, license and enrollment token.</p></div>`);
-  const ab=el(`<button class="btn">⬇ Download agent (.exe package)</button>`);
+  const a=el(`<div class="card"><h3 style="margin:0 0 8px">2 · Pre-Configured Endpoint Client (Agent)</h3>
+    <p class="muted">Standalone <b>VoyagerAgent.exe</b> package. Dynamically generated from this Client Server — pre-configured with server URL, tenant ID, license, and enrollment token.</p></div>`);
+  const ab=el(`<button class="btn">⬇ Generate & Download VoyagerAgent.zip</button>`);
   ab.onclick=async()=>{ try{ await downloadWithAuth("/api/download/agent", "VoyagerAgent.zip"); }catch(e){ toast(e.message,true); } };
   a.appendChild(ab);
-  a.appendChild(el(`<p class="muted" style="margin-top:10px">Copy the folder to each PC → <b>double-click VoyagerAgent.exe</b>. It auto-enrolls, runs in the background and restarts at logon. Requires the license to be active.</p>`));
+  a.appendChild(el(`<p class="muted" style="margin-top:10px">Extract on employee PC → <b>double-click VoyagerAgent.exe</b>. Auto-enrolls with no typing required. Starts in background and auto-launches at logon.</p>`));
   grid.appendChild(a);
 
   main.appendChild(grid);
@@ -550,14 +579,15 @@ async function showCredentials(tenant){
   const users=await api(`/api/users?tenant_id=${tenant.id}`);
   const body=el(`<div></div>`);
   body.appendChild(el(`<div class="muted" style="margin-bottom:10px">Registered email: <b>${esc(tenant.contact_email||"—")}</b> · Phone: ${esc(tenant.contact_phone||"—")}</div>`));
-  body.appendChild(el(`<div class="notice">Passwords are stored one-way (hashed) and cannot be shown. Use <b>Reset</b> to issue a new password — it is displayed once and can be emailed to the registered address.</div>`));
-  const t=tableFrom(["Username / email","Role","Active","Last login","Action"],
+  body.appendChild(el(`<div class="notice">Passwords are stored one-way (hashed). You can reset password directly or <b>Download Reset Key File (.txt)</b> to import on the Client Server.</div>`));
+  const t=tableFrom(["Username / email","Role","Active","Last login","Actions"],
     users.map(u=>[esc(u.email),`<span class="pill">${esc(u.role)}</span>`,u.is_active?`<span class="badge b-ok">yes</span>`:`<span class="badge b-off">no</span>`,
       u.last_login?fmtDate(u.last_login):"never",
-      `<button class="btn sm" data-reset="${u.id}" data-email="${esc(u.email)}">Reset password</button>`]));
+      `<button class="btn sm" data-reset="${u.id}" data-email="${esc(u.email)}">Reset password</button> <button class="btn sm ghost" data-dlkey="${u.id}" data-email="${esc(u.email)}">⬇ Reset Key (.txt)</button>`]));
   body.appendChild(t);
   const bg=modal(`Credentials — ${esc(tenant.company_name)}`, body, null, "Close");
   body.querySelectorAll("[data-reset]").forEach(b=>b.onclick=()=>resetPassword(b.dataset.reset, b.dataset.email, tenant));
+  body.querySelectorAll("[data-dlkey]").forEach(b=>b.onclick=()=>downloadWithAuth(`/api/users/${b.dataset.dlkey}/download-reset-key`, `RESET_KEY_${(tenant.company_name||"client").replace(/[^A-Za-z0-9_-]+/g,"_")}_${b.dataset.email}.txt`));
 }
 
 function resetPassword(userId, email, tenant){
@@ -1006,14 +1036,65 @@ function resetChooser(){
   const body=el(`<div>
     <p class="muted" style="margin-bottom:12px">How do you want to reset your password?</p>
     <div style="display:flex;flex-direction:column;gap:8px">
-      <button class="btn" id="rcEmail">✉ Email me a reset link</button>
+      <button class="btn" id="rcImport" style="background:#0284c7;color:#fff;">📁 Import Reset Key File (.txt) from License Server</button>
+      <button class="btn ghost" id="rcEmail">✉ Email me a reset link</button>
       <button class="btn ghost" id="rcLocal">💾 Local reset (no email)</button>
-      <button class="btn ghost" id="rcCode">I already have a reset code</button>
+      <button class="btn ghost" id="rcCode">I already have a reset code or key</button>
     </div></div>`);
   const bg=modal("Reset password", body, null, "Close");
+  body.querySelector("#rcImport").onclick=()=>{ bg.remove(); importResetFileFlow(); };
   body.querySelector("#rcEmail").onclick=()=>{ bg.remove(); forgotFlow("password"); };
   body.querySelector("#rcCode").onclick=()=>{ bg.remove(); codeResetForm(); };
   body.querySelector("#rcLocal").onclick=()=>{ bg.remove(); localResetFlow(); };
+}
+
+function importResetFileFlow(){
+  const wrap = el(`<div>
+    <p class="muted" style="margin-bottom:12px">Select or paste the <b>RESET_KEY_...txt</b> file generated by Voyager Inc License Server.</p>
+    <div class="field" style="margin-bottom:12px">
+      <label style="display:block;font-weight:600;margin-bottom:4px">Select .txt Reset Key File</label>
+      <input type="file" id="resetFileInput" accept=".txt" style="width:100%" />
+    </div>
+    <div class="field" style="margin-bottom:12px">
+      <label style="display:block;font-weight:600;margin-bottom:4px">Reset Payload / Key</label>
+      <textarea id="resetTokenText" placeholder="Pasted content from RESET_KEY.txt file" style="width:100%;height:80px;font-family:monospace;font-size:0.8rem;"></textarea>
+    </div>
+    <div class="field" style="margin-bottom:12px">
+      <label style="display:block;font-weight:600;margin-bottom:4px">New Password</label>
+      <input id="newPwInput" type="password" placeholder="Enter new password" style="width:100%" />
+    </div>
+    <div class="field" style="margin-bottom:12px">
+      <label style="display:block;font-weight:600;margin-bottom:4px">Confirm New Password</label>
+      <input id="confirmPwInput" type="password" placeholder="Confirm new password" style="width:100%" />
+    </div>
+  </div>`);
+
+  wrap.querySelector("#resetFileInput").onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        wrap.querySelector("#resetTokenText").value = evt.target.result;
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  modal("Import License Reset Key File", wrap, async () => {
+    const token = (wrap.querySelector("#resetTokenText").value || "").trim();
+    const new_password = wrap.querySelector("#newPwInput").value;
+    const confirm = wrap.querySelector("#confirmPwInput").value;
+
+    if (!token) throw new Error("Please select a .txt file or paste the reset payload");
+    if (!new_password) throw new Error("Please enter a new password");
+    if (new_password !== confirm) throw new Error("Passwords do not match");
+
+    await api("/api/auth/reset-password", {
+      method: "POST",
+      body: { token, new_password }
+    });
+    toast("Password updated successfully! Please sign in.");
+  }, "Apply Password Reset");
 }
 
 function localResetFlow(){
@@ -1033,7 +1114,7 @@ function localResetFlow(){
 
 function codeResetForm(){
   const f=fields([
-    {k:"token",label:"Reset code (from email link or the server reset file)",type:"textarea"},
+    {k:"token",label:"Reset code or .txt payload",type:"textarea"},
     {k:"new_password",label:"New password",type:"password"},
     {k:"confirm",label:"Confirm new password",type:"password"},
   ]);

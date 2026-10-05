@@ -22,6 +22,7 @@ from ..security import (
     decode_token,
     hash_password,
     validate_password_strength,
+    verify_license,
     verify_password,
 )
 from ..services import email_service
@@ -227,24 +228,51 @@ def local_reset(body: dict, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/reset-password")
 def reset_password_with_token(body: dict, request: Request, db: Session = Depends(get_db)):
-    """Consume a reset token and set a new password. Public (token is the credential)."""
+    """Consume a reset token or imported .txt key file payload and set a new password."""
     token = (body.get("token") or "").strip()
     new_pw = body.get("new_password") or ""
-    row = db.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
-    if not row or row.used or row.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired reset link")
+
+    # Extract embedded payload if full text file content was pasted or uploaded
+    if "--- BEGIN RESET PAYLOAD ---" in token:
+        try:
+            token = token.split("--- BEGIN RESET PAYLOAD ---")[1].split("--- END RESET PAYLOAD ---")[0].strip()
+        except Exception:
+            pass
+
     err = validate_password_strength(new_pw)
     if err:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
-    user = db.get(AdminUser, row.user_id)
+
+    user: AdminUser | None = None
+    row = db.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+
+    if row and not row.used:
+        exp_dt = row.expires_at.replace(tzinfo=timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
+        if exp_dt >= datetime.now(timezone.utc):
+            user = db.get(AdminUser, row.user_id)
+            row.used = True
+
     if not user:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Account not found")
+        # Fallback to HMAC signed license token verification (for reset files from License Server)
+        payload = verify_license(token)
+        if payload and payload.get("kind") == "pw_reset":
+            exp_str = payload.get("exp")
+            exp_dt = datetime.fromisoformat(exp_str) if exp_str else None
+            if exp_dt and exp_dt >= datetime.now(timezone.utc):
+                uid = payload.get("user_id")
+                email = payload.get("email")
+                if uid:
+                    user = db.get(AdminUser, uid)
+                if not user and email:
+                    user = db.query(AdminUser).filter(AdminUser.email == email).first()
+
+    if not user:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired password reset key / file.")
+
     user.password_hash = hash_password(new_pw)
     user.failed_logins = 0
     user.locked_until = None
     user.cred_seq = (user.cred_seq or 0) + 1
-    row.used = True
-    # remove the on-server reset file so the code cannot be reused
     try:
         (BASE_DIR / "PASSWORD_RESET.txt").unlink(missing_ok=True)
     except Exception:
