@@ -50,9 +50,24 @@ taskkill /f /im python.exe >nul 2>&1
 
 echo [3/5] Extracting (your data and .env are preserved) ...
 if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%"
-rem Server 2012 has no Expand-Archive (PowerShell 3.0). Use .NET ZipFile, then Shell COM fallback.
-powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{$sh=New-Object -ComObject Shell.Application;New-Item -ItemType Directory -Force '%TMPDIR%'^|Out-Null;$sh.NameSpace('%TMPDIR%').CopyHere($sh.NameSpace('%TMPZIP%').Items(),20);Start-Sleep -Seconds 6}"
-if not exist "%TMPDIR%\server\app\main.py" ( echo [ERROR] Extract failed. & pause & exit /b 1 )
+mkdir "%TMPDIR%" >nul 2>&1
+
+rem --- Python built-in zipfile (works on Server 2012 / 2016 / 2019 / 2022 without PowerShell dependencies) ---
+if defined PY (
+  "%PY%" -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "%TMPZIP%" "%TMPDIR%" >nul 2>&1
+)
+if not exist "%TMPDIR%\server\app\main.py" (
+  python -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "%TMPZIP%" "%TMPDIR%" >nul 2>&1
+)
+if not exist "%TMPDIR%\server\app\main.py" (
+  rem --- PowerShell .NET / Shell COM fallback for Server 2012 ---
+  powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{$sh=New-Object -ComObject Shell.Application;$sh.NameSpace('%TMPDIR%').CopyHere($sh.NameSpace('%TMPZIP%').Items(),20);Start-Sleep -Seconds 5}" >nul 2>&1
+)
+if not exist "%TMPDIR%\server\app\main.py" (
+  rem --- PowerShell Expand-Archive (Server 2016+) ---
+  powershell -NoProfile -Command "Expand-Archive -Force -Path '%TMPZIP%' -DestinationPath '%TMPDIR%'" >nul 2>&1
+)
+if not exist "%TMPDIR%\server\app\main.py" ( echo [ERROR] Extract failed. Python or PowerShell zip extraction unavailable. & pause & exit /b 1 )
 
 rem --- replace application code only; never touch server\data or server\.env ---
 robocopy "%TMPDIR%\server\app" "server\app" /MIR /NFL /NDL /NJH /NJS /NC /NS >nul
