@@ -1267,13 +1267,15 @@ function codeResetForm(){
 }
 
 function forgotFlow(kind){
-  const isUser = kind==="username";
-  const f=fields([{k:"email",label:isUser?"Your company's registered email":"Your account email (username)",type:"email"}]);
-  modal(isUser?"Forgot username":"Forgot password", f, async()=>{
+  if(kind === "password" || kind === "pw"){
+    resetChooser();
+    return;
+  }
+  const f=fields([{k:"email",label:"Your company's registered email",type:"email"}]);
+  modal("Forgot username", f, async()=>{
     const email=(f._values().email||"").trim();
     if(!email) throw new Error("Enter an email");
-    const path=isUser?"/api/auth/forgot-username":"/api/auth/forgot-password";
-    const r=await api(path,{method:"POST",body:{email}});
+    const r=await api("/api/auth/forgot-username",{method:"POST",body:{email}});
     toast(r.message||"If a matching account exists, an email has been sent.");
   }, "Send email");
 }
