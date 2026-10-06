@@ -61,6 +61,37 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, _SECRET, algorithms=[_ALGO])
 
 
+# --------------------------------------------------------------------- portable reset token signing
+_PLATFORM_RESET_SALT = b"Voyager-Vmgmt-Platform-Reset-Key-Signing-Secret-2026"
+_PLATFORM_RESET_KEY = hashlib.sha256(_PLATFORM_RESET_SALT).hexdigest()
+
+
+def sign_reset_token(payload: dict) -> str:
+    """Portable HMAC signature over a reset token payload across License Server & Client Servers."""
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    sig = hmac.new(_PLATFORM_RESET_KEY.encode(), body, hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(body).decode() + "." + sig
+
+
+def verify_reset_token(token: str, extra_keys: list[str] | None = None) -> dict | None:
+    """Verify reset key token using portable platform key, local secret, or extra candidate secrets."""
+    try:
+        if not token or "." not in token:
+            return None
+        body_b64, sig = token.split(".", 1)
+        body = base64.urlsafe_b64decode(body_b64.encode())
+        candidates = [_PLATFORM_RESET_KEY, _SECRET]
+        if extra_keys:
+            candidates.extend([k for k in extra_keys if k])
+        for key in candidates:
+            expected = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(expected, sig):
+                return json.loads(body)
+        return None
+    except Exception:
+        return None
+
+
 # --------------------------------------------------------------------- license signing
 def sign_license(payload: dict) -> str:
     """Deterministic HMAC signature over a canonical license payload (PRD §8, §35 license abuse)."""

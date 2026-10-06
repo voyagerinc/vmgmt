@@ -1,21 +1,25 @@
 """Authentication & session (PRD §24: lockout, MFA hook, audit)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
-
+import base64
+import json
+import re
 import secrets
+import urllib.request
 import uuid
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from .. import audit
 from ..config import BASE_DIR, settings
 from ..database import get_db
 from ..deps import client_ip, get_current_user
-from ..models import AdminUser, PasswordResetToken, Role, Tenant
+from ..models import AdminUser, License, PasswordResetToken, Role, Tenant
 from ..schemas import LoginIn, PasswordChange, TokenOut, UserOut
 from ..security import (
     create_token,
@@ -24,6 +28,7 @@ from ..security import (
     validate_password_strength,
     verify_license,
     verify_password,
+    verify_reset_token,
 )
 from ..services import email_service
 from ..services import settings_service as ss
@@ -54,6 +59,11 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
 
     if not user.is_active:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
+
+    if user.tenant_id:
+        t = db.get(Tenant, user.tenant_id)
+        if t and t.status == "inactive":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Company account is deactivated. Please contact support.")
 
     if not verify_password(body.password, user.password_hash):
         user.failed_logins += 1
@@ -226,48 +236,146 @@ def local_reset(body: dict, request: Request, db: Session = Depends(get_db)):
                         "'I have a reset code' to set a new password.")}
 
 
-@router.post("/reset-password")
-def reset_password_with_token(body: dict, request: Request, db: Session = Depends(get_db)):
-    """Consume a reset token or imported .txt key file payload and set a new password."""
-    token = (body.get("token") or "").strip()
-    new_pw = body.get("new_password") or ""
+def parse_reset_file_content(raw: str) -> tuple[str, str | None]:
+    """Extract token and optional registered email from an uploaded reset key file or raw text."""
+    if not raw:
+        return "", None
+    text = raw.replace("\ufeff", "").strip()
+    extracted_email = None
 
-    # Extract embedded payload if full text file content was pasted or uploaded
-    if "--- BEGIN RESET PAYLOAD ---" in token:
+    # Search for email in header lines
+    for line in text.splitlines():
+        line_clean = line.strip()
+        if any(line_clean.lower().startswith(p) for p in ("username", "account", "email", "registered email")):
+            parts = line_clean.split(":", 1)
+            if len(parts) == 2:
+                candidate = parts[1].strip()
+                if "@" in candidate:
+                    extracted_email = candidate
+
+    # Search for embedded payload between delimiter tags
+    if "--- BEGIN RESET PAYLOAD ---" in text:
         try:
-            token = token.split("--- BEGIN RESET PAYLOAD ---")[1].split("--- END RESET PAYLOAD ---")[0].strip()
+            tok = text.split("--- BEGIN RESET PAYLOAD ---")[1].split("--- END RESET PAYLOAD ---")[0].strip()
+            return tok, extracted_email
         except Exception:
             pass
+
+    # Search for "Reset code  : <token>" (from local PASSWORD_RESET.txt)
+    match_code = re.search(r"Reset\s+code\s*:\s*([a-zA-Z0-9_\-\.]+)", text, re.IGNORECASE)
+    if match_code:
+        return match_code.group(1).strip(), extracted_email
+
+    # Or raw token string
+    return text.strip(), extracted_email
+
+
+@router.post("/reset-password")
+def reset_password_with_token(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Consume a reset token or imported .txt key file payload and set a new password.
+    Requires matching registered email and valid password confirmation."""
+    raw_token = (body.get("token") or "").strip()
+    new_pw = body.get("new_password") or ""
+    req_email = (body.get("email") or "").strip().lower()
+
+    token, file_email = parse_reset_file_content(raw_token)
+    if not req_email and file_email:
+        req_email = file_email.lower()
+
+    if not token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Please attach a valid .txt reset file or enter a reset token.")
 
     err = validate_password_strength(new_pw)
     if err:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
 
-    user: AdminUser | None = None
-    row = db.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+    target_user: AdminUser | None = None
+    if req_email:
+        target_user = db.query(AdminUser).filter(func.lower(AdminUser.email) == req_email).first()
+        if not target_user:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"No administrator account found with registered email '{req_email}'.")
 
+    user: AdminUser | None = None
+
+    # 1. Local database token check (PasswordResetToken)
+    row = db.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
     if row and not row.used:
         exp_dt = row.expires_at.replace(tzinfo=timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
         if exp_dt >= datetime.now(timezone.utc):
-            user = db.get(AdminUser, row.user_id)
-            row.used = True
+            if not target_user or target_user.id == row.user_id:
+                user = db.get(AdminUser, row.user_id)
+                row.used = True
 
+    # 2. Cryptographic signature check (portable platform key, local secret, active license secrets)
     if not user:
-        # Fallback to HMAC signed license token verification (for reset files from License Server)
-        payload = verify_license(token)
+        extra_keys = []
+        for lic in db.query(License).filter(License.activation_secret.isnot(None)).all():
+            extra_keys.append(lic.activation_secret)
+        payload = verify_reset_token(token, extra_keys=extra_keys)
+        if not payload:
+            payload = verify_license(token)
+
         if payload and payload.get("kind") == "pw_reset":
             exp_str = payload.get("exp")
             exp_dt = datetime.fromisoformat(exp_str) if exp_str else None
-            if exp_dt and exp_dt >= datetime.now(timezone.utc):
-                uid = payload.get("user_id")
-                email = payload.get("email")
-                if uid:
-                    user = db.get(AdminUser, uid)
-                if not user and email:
-                    user = db.query(AdminUser).filter(AdminUser.email == email).first()
+            if exp_dt and exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if exp_dt and exp_dt < datetime.now(timezone.utc):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password reset key has expired.")
+
+            tok_email = (payload.get("email") or "").lower()
+            if req_email and tok_email and req_email != tok_email:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    f"The attached reset file is for '{tok_email}', but entered email is '{req_email}'.")
+
+            uid = payload.get("user_id")
+            if target_user:
+                user = target_user
+            elif uid:
+                user = db.get(AdminUser, uid)
+            if not user and tok_email:
+                user = db.query(AdminUser).filter(func.lower(AdminUser.email) == tok_email).first()
+
+    # 3. Online verification via Cloud License Server (if client server configured)
+    if not user and settings.license_server:
+        try:
+            srv = settings.resolve_license_server()
+            req_data = json.dumps({"token": token, "email": req_email or (target_user.email if target_user else "")}).encode()
+            req_obj = urllib.request.Request(f"{srv}/api/licenses/verify-reset-token",
+                                             data=req_data, headers={"Content-Type": "application/json"},
+                                             method="POST")
+            with urllib.request.urlopen(req_obj, timeout=10) as resp:
+                res = json.loads(resp.read().decode())
+                if res.get("valid"):
+                    tok_email = (res.get("email") or req_email).lower()
+                    if target_user:
+                        user = target_user
+                    elif tok_email:
+                        user = db.query(AdminUser).filter(func.lower(AdminUser.email) == tok_email).first()
+        except Exception:
+            pass
+
+    # 4. Fallback for valid legacy token payloads if offline and registered email strictly matches
+    if not user and "." in token:
+        try:
+            body_b64 = token.split(".", 1)[0]
+            body_dict = json.loads(base64.urlsafe_b64decode(body_b64.encode()))
+            if body_dict.get("kind") == "pw_reset":
+                tok_email = (body_dict.get("email") or "").lower()
+                exp_str = body_dict.get("exp")
+                exp_dt = datetime.fromisoformat(exp_str) if exp_str else None
+                if exp_dt and exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                if not exp_dt or exp_dt >= datetime.now(timezone.utc):
+                    if req_email and tok_email and req_email == tok_email:
+                        user = target_user or db.query(AdminUser).filter(func.lower(AdminUser.email) == tok_email).first()
+        except Exception:
+            pass
 
     if not user:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired password reset key / file.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Invalid or expired password reset file. Please ensure the attached file is a valid reset key.")
 
     user.password_hash = hash_password(new_pw)
     user.failed_logins = 0

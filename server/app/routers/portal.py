@@ -13,7 +13,24 @@ from .. import audit
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_user, platform_admin
-from ..models import AdminUser, License, LicenseEdition, LicenseStatus, Role, Tenant
+from ..models import (
+    ActivityEvent,
+    AdminUser,
+    Alert,
+    Asset,
+    Device,
+    Employee,
+    EnrollmentToken,
+    FileEvent,
+    HealthMetric,
+    License,
+    LicenseEdition,
+    LicenseStatus,
+    PasswordResetToken,
+    Policy,
+    Role,
+    Tenant,
+)
 from ..schemas import (
     ActivateIn,
     LicenseIn,
@@ -24,7 +41,7 @@ from ..schemas import (
     TenantIn,
     TenantOut,
 )
-from ..security import hash_password, validate_password_strength
+from ..security import hash_password, sign_reset_token, validate_password_strength, verify_license, verify_reset_token
 from ..services import email_service
 from ..services import license_service as lic_svc
 
@@ -83,6 +100,74 @@ def get_tenant(tenant_id: str, db: Session = Depends(get_db), user: AdminUser = 
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
     return t
+
+
+@router.delete("/tenants/{tenant_id}", dependencies=[Depends(platform_admin)])
+def delete_tenant(tenant_id: str, request: Request, db: Session = Depends(get_db),
+                  admin: AdminUser = Depends(platform_admin)):
+    """Delete a company and all its associated data (Platform Super Admin only)."""
+    t = db.get(Tenant, tenant_id)
+    if not t:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Company not found")
+
+    company_name = t.company_name
+
+    # Explicit cascade cleanup
+    db.query(Alert).filter(Alert.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(Asset).filter(Asset.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(Policy).filter(Policy.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(ActivityEvent).filter(ActivityEvent.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(FileEvent).filter(FileEvent.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(HealthMetric).filter(HealthMetric.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(Device).filter(Device.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(Employee).filter(Employee.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(EnrollmentToken).filter(EnrollmentToken.tenant_id == tenant_id).delete(synchronize_session=False)
+    for u in db.query(AdminUser).filter(AdminUser.tenant_id == tenant_id).all():
+        db.query(PasswordResetToken).filter(PasswordResetToken.user_id == u.id).delete(synchronize_session=False)
+        db.delete(u)
+    db.query(License).filter(License.tenant_id == tenant_id).delete(synchronize_session=False)
+
+    audit.record(db, action="tenant_delete", tenant_id=None, actor_id=admin.id,
+                 actor_email=admin.email, target_type="tenant", target_id=tenant_id,
+                 new_value={"company": company_name}, source_ip=client_ip(request))
+    db.delete(t)
+    db.commit()
+    return {"ok": True, "message": f"Company '{company_name}' removed successfully"}
+
+
+@router.post("/tenants/{tenant_id}/status", dependencies=[Depends(platform_admin)])
+@router.patch("/tenants/{tenant_id}/status", dependencies=[Depends(platform_admin)])
+def set_tenant_status(tenant_id: str, body: dict, request: Request,
+                      db: Session = Depends(get_db),
+                      admin: AdminUser = Depends(platform_admin)):
+    """Change company status to 'active' or 'inactive' (Platform Super Admin only)."""
+    t = db.get(Tenant, tenant_id)
+    if not t:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Company not found")
+
+    new_status = (body.get("status") or "").strip().lower()
+    if new_status not in ("active", "inactive"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Status must be 'active' or 'inactive'")
+
+    old_status = t.status
+    t.status = new_status
+
+    # Synchronize licenses with company status
+    for lic in db.query(License).filter(License.tenant_id == tenant_id).all():
+        if new_status == "inactive":
+            if lic.status == LicenseStatus.ACTIVE:
+                lic.status = LicenseStatus.SUSPENDED
+        elif new_status == "active":
+            if lic.status == LicenseStatus.SUSPENDED:
+                lic.status = LicenseStatus.ACTIVE
+
+    audit.record(db, action="tenant_status_change", tenant_id=t.id, actor_id=admin.id,
+                 actor_email=admin.email, target_type="tenant", target_id=t.id,
+                 new_value={"old_status": old_status, "new_status": new_status},
+                 source_ip=client_ip(request))
+    db.commit()
+    db.refresh(t)
+    return {"ok": True, "status": t.status, "company_name": t.company_name}
 
 
 # ---------------------------------------------------------------- licenses
@@ -307,6 +392,18 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
         tenant.last_sync_at = datetime.now(timezone.utc)
         db.commit()
 
+        if tenant.status == "inactive":
+            return {
+                "owner_email": None,
+                "owner_password_hash": None,
+                "cred_seq": 0,
+                "status": "revoked",
+                "expiry": lic.expiry_date.isoformat(),
+                "max_devices": 0,
+                "features": {},
+                "detail": "Company account is deactivated / inactive on Cloud License Server."
+            }
+
     owner = (db.query(AdminUser)
              .filter(AdminUser.tenant_id == lic.tenant_id, AdminUser.role == Role.CUSTOMER_OWNER)
              .order_by(AdminUser.created_at.asc()).first())
@@ -319,6 +416,46 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
         "max_devices": lic.max_devices,
         "features": lic.features,
     }
+
+
+@router.post("/licenses/verify-reset-token")
+def verify_reset_token_endpoint(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Cloud License Server: public endpoint for Client Servers to verify password reset tokens."""
+    token = (body.get("token") or "").strip()
+    email = (body.get("email") or "").strip().lower()
+    if not token:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Token is required")
+
+    payload = verify_reset_token(token)
+    if not payload:
+        payload = verify_license(token)
+    if not payload:
+        row = db.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+        if row and not row.used:
+            u = db.get(AdminUser, row.user_id)
+            if u:
+                payload = {"email": u.email, "user_id": u.id, "kind": "pw_reset",
+                           "exp": row.expires_at.isoformat()}
+
+    if not payload or payload.get("kind") != "pw_reset":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid reset token")
+
+    exp_str = payload.get("exp")
+    if exp_str:
+        try:
+            exp_dt = datetime.fromisoformat(exp_str)
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if exp_dt < datetime.now(timezone.utc):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Reset token has expired")
+        except Exception:
+            pass
+
+    tok_email = (payload.get("email") or "").lower()
+    if email and tok_email and email != tok_email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Registered email does not match reset token")
+
+    return {"ok": True, "valid": True, "email": tok_email, "payload": payload}
 
 
 @router.get("/license/status")

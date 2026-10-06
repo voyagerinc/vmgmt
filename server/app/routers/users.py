@@ -13,7 +13,7 @@ from ..database import get_db
 from ..deps import client_ip, get_current_user, require_roles, resolve_tenant
 from ..models import AdminUser, PasswordResetToken, Role, Tenant
 from ..schemas import UserIn, UserOut
-from ..security import hash_password, sign_license, validate_password_strength
+from ..security import hash_password, sign_license, sign_reset_token, validate_password_strength
 from ..services import email_service
 from ..services import license_service as lic_svc
 from ..services import settings_service as ss
@@ -53,7 +53,7 @@ def download_reset_key(user_id: str, request: Request = None, db: Session = Depe
         "iat": now.isoformat(),
         "exp": exp.isoformat()
     }
-    signed_token = sign_license(payload)
+    signed_token = sign_reset_token(payload)
 
     tok = PasswordResetToken(user_id=u.id, token=signed_token, expires_at=exp)
     db.add(tok)
@@ -67,17 +67,20 @@ def download_reset_key(user_id: str, request: Request = None, db: Session = Depe
         "================================================================\n"
         "VOYAGER INC - LICENSE SERVER PASSWORD RESET KEY FILE\n"
         "================================================================\n"
-        f"Company     : {company_name}\n"
-        f"Username    : {u.email}\n"
-        f"Tenant ID   : {u.tenant_id}\n"
-        f"Issued At   : {now:%Y-%m-%d %H:%M:%S} UTC\n"
-        f"Expires At  : {exp:%Y-%m-%d %H:%M:%S} UTC (7 Days)\n"
+        f"Company          : {company_name}\n"
+        f"Registered Email : {u.email}\n"
+        f"Username         : {u.email}\n"
+        f"Tenant ID        : {u.tenant_id}\n"
+        f"Issued At        : {now:%Y-%m-%d %H:%M:%S} UTC\n"
+        f"Expires At       : {exp:%Y-%m-%d %H:%M:%S} UTC (7 Days)\n"
         "================================================================\n"
         "INSTRUCTIONS FOR CLIENT MANAGEMENT SERVER:\n"
         "  1. Open your Client Management Server login console.\n"
-        "  2. Click 'Forgot password?'.\n"
-        "  3. Select 'Import Reset Key File (.txt)' and choose this file.\n"
-        "  4. Set your new password to immediately restore admin access.\n"
+        "  2. Click '📁 Reset via .txt File / Password'.\n"
+        f"  3. Enter your Registered Email Address ({u.email}).\n"
+        "  4. Attach this .txt Reset Key file.\n"
+        "  5. Enter your new password and confirm it.\n"
+        "  6. Click 'Apply .txt Reset File & Reset Password'.\n"
         "================================================================\n"
         "--- BEGIN RESET PAYLOAD ---\n"
         f"{signed_token}\n"

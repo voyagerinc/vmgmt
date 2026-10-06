@@ -77,7 +77,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&
 function toast(msg, err=false){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",3200); }
 function fmtDate(s){ if(!s) return "—"; const d=new Date(s); return isNaN(d)?"—":d.toLocaleString(); }
 function ago(s){ if(!s) return "never"; const d=(Date.now()-new Date(s))/1000; if(d<60)return Math.floor(d)+"s"; if(d<3600)return Math.floor(d/60)+"m"; if(d<86400)return Math.floor(d/3600)+"h"; return Math.floor(d/86400)+"d"; }
-function statusBadge(s){ const m={active:"b-ok",online:"b-ok",offline:"b-off",pending:"b-pending",revoked:"b-rev"}; return `<span class="badge ${m[s]||"b-off"}">${esc(s)}</span>`; }
+function statusBadge(s){ const m={active:"b-ok",online:"b-ok",offline:"b-off",pending:"b-pending",revoked:"b-rev",inactive:"b-rev",suspended:"b-rev"}; return `<span class="badge ${m[s]||"b-off"}">${esc(s)}</span>`; }
 function sevBadge(s){ return `<span class="badge b-${esc(s)}">${esc(s)}</span>`; }
 
 function modal(title, bodyNode, onSubmit, submitLabel="Save"){
@@ -624,6 +624,15 @@ function renderTenantTable(tenants){
       const updStr = t.client_server_updated_at ? `<div class="muted" style="font-size:11px">Updated: ${fmtDate(t.client_server_updated_at)}</div>` : "";
       const syncStr = t.last_sync_at ? `<div class="muted" style="font-size:10px">Synced: ${fmtDate(t.last_sync_at)}</div>` : "";
       const verCol = `<div>${verBadge}${updStr}${syncStr}</div>`;
+      const isInactive = (t.status||"active").toLowerCase() === "inactive";
+      const statusBtn = isPlatform
+        ? (isInactive
+            ? ` <button class="btn sm" data-status="${t.id}" data-set="active" style="background:#16a34a;color:#fff;" title="Activate company">Activate</button>`
+            : ` <button class="btn sm ghost" data-status="${t.id}" data-set="inactive" style="color:#eab308;border-color:#eab308;" title="Deactivate company">Inactive</button>`)
+        : "";
+      const removeBtn = isPlatform
+        ? ` <button class="btn sm ghost" data-del="${t.id}" data-name="${esc(t.company_name)}" style="color:#ef4444;border-color:#ef4444;" title="Remove company">Remove</button>`
+        : "";
       return [
         esc(t.company_name),
         esc(t.contact_email||"—"),
@@ -631,7 +640,7 @@ function renderTenantTable(tenants){
         statusBadge(t.status),
         `${t.evidence_retention_days}d ev / ${t.event_retention_days}d evt`,
         `<button class="btn sm ghost" data-view="${t.id}">View data</button>`+
-        (isPlatform?` <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>`:"")
+        (isPlatform?` <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>${statusBtn}${removeBtn}`:"")
       ];
     }));
   wrap.appendChild(t);
@@ -639,6 +648,29 @@ function renderTenantTable(tenants){
   wrap.querySelectorAll("[data-cred]").forEach(b=>b.onclick=()=>showCredentials(tenants.find(x=>x.id===b.dataset.cred)));
   wrap.querySelectorAll("[data-lic]").forEach(b=>b.onclick=()=>addLicense(b.dataset.lic));
   wrap.querySelectorAll("[data-lics]").forEach(b=>b.onclick=()=>showLicenses(b.dataset.lics));
+  wrap.querySelectorAll("[data-status]").forEach(b=>b.onclick=async()=>{
+    const newStatus = b.dataset.set;
+    const actionLabel = newStatus === "active" ? "activate" : "deactivate";
+    if(!confirm(`Are you sure you want to ${actionLabel} this company?`)) return;
+    try {
+      await api(`/api/tenants/${b.dataset.status}/status`, {method:"POST", body:{status: newStatus}});
+      toast(`Company marked as ${newStatus}`);
+      route();
+    } catch(err) {
+      toast(err.message, true);
+    }
+  });
+  wrap.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{
+    const name = b.dataset.name;
+    if(!confirm(`Are you sure you want to permanently remove company "${name}" and all its licenses and data?\n\nThis action cannot be undone.`)) return;
+    try {
+      await api(`/api/tenants/${b.dataset.del}`, {method:"DELETE"});
+      toast(`Company "${name}" removed successfully`);
+      route();
+    } catch(err) {
+      toast(err.message, true);
+    }
+  });
   return wrap;
 }
 
@@ -1114,6 +1146,7 @@ function renderLogin(){
 
 function resetChooser(){
   let loadedToken = "";
+  let detectedEmail = "";
   const body=el(`<div>
     <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--border,#334155);padding-bottom:10px;">
       <button class="btn sm" id="tabFile" style="background:#0284c7;color:#fff;">📁 Attach .txt Reset File</button>
@@ -1124,21 +1157,27 @@ function resetChooser(){
     <!-- TAB 1: Attach .txt File -->
     <div id="secFile">
       <div class="notice" style="margin-bottom:12px;">
-        Select or attach the <b>RESET_KEY_...txt</b> file downloaded from Voyager Inc License Server.
+        Enter your registered email address and attach the <b>RESET_KEY_...txt</b> file downloaded from the License Server (or <b>PASSWORD_RESET.txt</b>).
       </div>
       <div class="field" style="margin-bottom:12px;">
-        <label style="display:block;font-weight:600;margin-bottom:4px">1. Attach .txt Reset Key File</label>
+        <label style="display:block;font-weight:600;margin-bottom:4px">1. Registered Email Address <span style="color:#ef4444">*</span></label>
+        <input id="fileEmailInput" type="email" placeholder="owner@demo.local" style="width:100%" autocomplete="email" />
+        <div class="muted" style="font-size:11px;margin-top:2px">Must match the registered administrator email for this account.</div>
+      </div>
+      <div class="field" style="margin-bottom:12px;">
+        <label style="display:block;font-weight:600;margin-bottom:4px">2. Attach .txt Reset Key File <span style="color:#ef4444">*</span></label>
         <input type="file" id="resetFilePicker" accept=".txt" style="width:100%;padding:10px;border:1px dashed #0284c7;background:rgba(2,132,199,0.06);border-radius:6px;cursor:pointer;" />
+        <div id="fileAttachStatus" style="margin-top:6px;font-size:12px;"></div>
       </div>
       <div class="field" style="margin-bottom:12px;">
-        <label style="display:block;font-weight:600;margin-bottom:4px">2. New Password</label>
-        <input id="fileNewPw" type="password" placeholder="Enter new password" style="width:100%" />
+        <label style="display:block;font-weight:600;margin-bottom:4px">3. New Password <span style="color:#ef4444">*</span></label>
+        <input id="fileNewPw" type="password" placeholder="Enter new password" style="width:100%" autocomplete="new-password" />
       </div>
       <div class="field" style="margin-bottom:14px;">
-        <label style="display:block;font-weight:600;margin-bottom:4px">3. Confirm New Password</label>
-        <input id="fileConfirmPw" type="password" placeholder="Confirm new password" style="width:100%" />
+        <label style="display:block;font-weight:600;margin-bottom:4px">4. Confirm New Password <span style="color:#ef4444">*</span></label>
+        <input id="fileConfirmPw" type="password" placeholder="Confirm new password" style="width:100%" autocomplete="new-password" />
       </div>
-      <button class="btn" id="btnSubmitFile" style="width:100%;background:#0284c7;color:#fff;font-weight:600;">Apply .txt Reset File & Reset Password</button>
+      <button class="btn" id="btnSubmitFile" style="width:100%;background:#0284c7;color:#fff;font-weight:600;padding:10px;">Apply .txt Reset File & Reset Password</button>
     </div>
 
     <!-- TAB 2: Send Email -->
@@ -1153,6 +1192,10 @@ function resetChooser(){
 
     <!-- TAB 3: Manual Token -->
     <div id="secCode" style="display:none">
+      <div class="field" style="margin-bottom:12px;">
+        <label style="display:block;font-weight:600;margin-bottom:4px">Registered Email Address</label>
+        <input id="codeEmailInput" type="email" placeholder="owner@demo.local" style="width:100%" />
+      </div>
       <div class="field" style="margin-bottom:12px;">
         <label style="display:block;font-weight:600;margin-bottom:4px">Reset Token / Code</label>
         <textarea id="codeTokenInput" placeholder="Paste reset code or .txt payload" style="width:100%;height:70px;font-family:monospace;font-size:0.8rem;"></textarea>
@@ -1206,27 +1249,53 @@ function resetChooser(){
       const reader = new FileReader();
       reader.onload = (evt) => {
         loadedToken = evt.target.result;
-        toast("✓ Attached reset key file: " + file.name);
+        detectedEmail = "";
+        // Look for username/account in text
+        const m = loadedToken.match(/(?:registered\s*email|username|account|email)\s*:\s*([^\r\n]+)/i);
+        if (m) {
+          detectedEmail = m[1].trim();
+        } else if (loadedToken.includes("--- BEGIN RESET PAYLOAD ---")) {
+          try {
+            const raw = loadedToken.split("--- BEGIN RESET PAYLOAD ---")[1].split("--- END RESET PAYLOAD ---")[0].trim();
+            const b64 = raw.split(".")[0];
+            const parsed = JSON.parse(atob(b64));
+            if (parsed && parsed.email) detectedEmail = parsed.email;
+          } catch(err){}
+        }
+        const emailInp = body.querySelector("#fileEmailInput");
+        const statusBadge = body.querySelector("#fileAttachStatus");
+        if (detectedEmail) {
+          if (!emailInp.value) emailInp.value = detectedEmail;
+          statusBadge.innerHTML = `<span style="color:#22c55e">✓ Attached: <b>${esc(file.name)}</b> (Key for: <b>${esc(detectedEmail)}</b>)</span>`;
+          toast("✓ Loaded reset key for " + detectedEmail);
+        } else {
+          statusBadge.innerHTML = `<span style="color:#22c55e">✓ Attached file: <b>${esc(file.name)}</b></span>`;
+          toast("✓ Attached: " + file.name);
+        }
       };
       reader.readAsText(file);
     }
   };
 
   body.querySelector("#btnSubmitFile").onclick = async () => {
+    const email = (body.querySelector("#fileEmailInput").value || "").trim();
     const new_password = body.querySelector("#fileNewPw").value;
     const confirm = body.querySelector("#fileConfirmPw").value;
 
-    if (!loadedToken) throw new Error("Please select/attach a .txt Reset Key file first");
-    if (!new_password) throw new Error("Please enter a new password");
-    if (new_password !== confirm) throw new Error("Passwords do not match");
+    if (!email) { toast("Please enter your registered email address", true); return; }
+    if (!loadedToken) { toast("Please select and attach a .txt Reset Key file first", true); return; }
+    if (!new_password) { toast("Please enter a new password", true); return; }
+    if (new_password !== confirm) { toast("Passwords do not match", true); return; }
 
     try {
       await api("/api/auth/reset-password", {
         method: "POST",
-        body: { token: loadedToken, new_password }
+        body: { email, token: loadedToken, new_password }
       });
       bg.remove();
-      toast("Password updated successfully! Please sign in.");
+      toast("✓ Password updated successfully! Please sign in.");
+      const emailField = document.querySelector("#loginCard input[type='email']") || document.querySelector("#loginCard input");
+      if (emailField) emailField.value = email;
     } catch(err) {
       toast(err.message, true);
     }
@@ -1234,7 +1303,7 @@ function resetChooser(){
 
   body.querySelector("#btnSendEmail").onclick = async () => {
     const email = (body.querySelector("#emailResetInput").value || "").trim();
-    if (!email) throw new Error("Please enter your account email");
+    if (!email) { toast("Please enter your account email", true); return; }
     try {
       const r = await api("/api/auth/forgot-password", { method: "POST", body: { email } });
       bg.remove();
@@ -1245,18 +1314,22 @@ function resetChooser(){
   };
 
   body.querySelector("#btnSubmitCode").onclick = async () => {
+    const email = (body.querySelector("#codeEmailInput").value || "").trim();
     const token = (body.querySelector("#codeTokenInput").value || "").trim();
     const new_password = body.querySelector("#codeNewPw").value;
     const confirm = body.querySelector("#codeConfirmPw").value;
 
-    if (!token) throw new Error("Please enter a reset token");
-    if (!new_password) throw new Error("Please enter a new password");
-    if (new_password !== confirm) throw new Error("Passwords do not match");
+    if (!token) { toast("Please enter a reset token or code", true); return; }
+    if (!new_password) { toast("Please enter a new password", true); return; }
+    if (new_password !== confirm) { toast("Passwords do not match", true); return; }
 
     try {
-      await api("/api/auth/reset-password", { method: "POST", body: { token, new_password } });
+      await api("/api/auth/reset-password", {
+        method: "POST",
+        body: { email: email || undefined, token, new_password }
+      });
       bg.remove();
-      toast("Password updated successfully! Please sign in.");
+      toast("✓ Password updated successfully! Please sign in.");
     } catch(err) {
       toast(err.message, true);
     }
