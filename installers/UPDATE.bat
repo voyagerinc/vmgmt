@@ -42,7 +42,8 @@ set "TMPDIR=%~dp0voyager_update_tmp"
 
 echo.
 echo [1/5] Downloading latest bundle ...
-powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '%LIC%/api/updates/download/bundle' -OutFile '%TMPZIP%' } catch { exit 1 }"
+if exist "%TMPZIP%" del /f /q "%TMPZIP%" >nul 2>&1
+powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls; try { (New-Object System.Net.WebClient).DownloadFile('%LIC%/api/updates/download/bundle', '%TMPZIP%') } catch { try { Invoke-WebRequest -UseBasicParsing -Uri '%LIC%/api/updates/download/bundle' -OutFile '%TMPZIP%' } catch { exit 1 } }"
 if not exist "%TMPZIP%" (
   echo [ERROR] Download failed from %LIC%/api/updates/download/bundle.
   pause & exit /b 1
@@ -51,6 +52,7 @@ if not exist "%TMPZIP%" (
 echo [2/5] Stopping service ...
 net stop EndpointMgmtServer >nul 2>&1
 taskkill /f /im python.exe >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
 
 echo [3/5] Extracting (your data and .env are preserved) ...
 if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%"
@@ -64,7 +66,10 @@ if not exist "%TMPDIR%\server\app\main.py" (
   python -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "%TMPZIP%" "%TMPDIR%" >nul 2>&1
 )
 if not exist "%TMPDIR%\server\app\main.py" (
-  powershell -NoProfile -Command "try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{}" >nul 2>&1
+  powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try{Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory('%TMPZIP%','%TMPDIR%')}catch{}" >nul 2>&1
+)
+if not exist "%TMPDIR%\server\app\main.py" (
+  tar -xf "%TMPZIP%" -C "%TMPDIR%" >nul 2>&1
 )
 
 if not exist "%TMPDIR%\server\app\main.py" (

@@ -1080,11 +1080,14 @@ function renderLogin(){
     <div class="field"><label>Tenant ID (optional)</label><input id="tenant" placeholder="leave blank to auto-detect" /></div>
     <div class="field" id="mfaWrap" style="display:none"><label>MFA code</label><input id="mfa" /></div>
     <button class="btn" id="loginBtn" style="width:100%">Sign in</button>
-    <div class="sub" style="margin-top:14px;display:flex;justify-content:space-between">
+    <div class="sub" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;">
       <a href="#" id="forgotUser">Forgot username?</a>
-      <a href="#" id="forgotPw">Forgot password?</a>
+      <a href="#" id="forgotPw" style="color:var(--accent,#38bdf8);font-weight:600;">📁 Reset via .txt File / Password</a>
     </div>
     <p class="sub" style="margin-top:12px">First-run credentials are printed to the server console and <code>FIRST_RUN.txt</code>.</p>
+    <div id="loginVerBox" class="sub" style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;font-size:0.8rem;color:var(--muted)">
+      Current Version: <b style="color:var(--accent,#38bdf8)">v4.1.0</b> · Last Updated: <b>—</b>
+    </div>
   </div>`);
   wrap.appendChild(card); app.appendChild(wrap);
   const doLogin=async()=>{
@@ -1102,10 +1105,10 @@ function renderLogin(){
     if(!m) return;
     const vStr = esc(m.version_display || ("v" + m.version));
     const uStr = m.updated_at ? fmtDate(m.updated_at) : "—";
-    const verDiv = el(`<div class="sub" style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;font-size:0.8rem;color:var(--muted)">
-      Current Version: <b style="color:var(--accent,#38bdf8)">${vStr}</b> · Last Updated: <b>${uStr}</b>
-    </div>`);
-    card.appendChild(verDiv);
+    const vb = card.querySelector("#loginVerBox");
+    if(vb){
+      vb.innerHTML = `Current Version: <b style="color:var(--accent,#38bdf8)">${vStr}</b> · Last Updated: <b>${uStr}</b>`;
+    }
   }).catch(()=>{});
 }
 
