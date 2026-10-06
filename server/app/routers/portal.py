@@ -293,6 +293,20 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
     lic = db.get(License, license_id)
     if not lic or not lic_svc.verify_activation(key, lic.id, lic.activation_secret):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid license id or key")
+    tenant = db.get(Tenant, lic.tenant_id)
+    if tenant:
+        c_ver = body.get("client_version")
+        c_upd = body.get("client_updated_at")
+        if c_ver:
+            tenant.client_server_version = c_ver
+        if c_upd:
+            try:
+                tenant.client_server_updated_at = datetime.fromisoformat(c_upd)
+            except Exception:
+                pass
+        tenant.last_sync_at = datetime.now(timezone.utc)
+        db.commit()
+
     owner = (db.query(AdminUser)
              .filter(AdminUser.tenant_id == lic.tenant_id, AdminUser.role == Role.CUSTOMER_OWNER)
              .order_by(AdminUser.created_at.asc()).first())

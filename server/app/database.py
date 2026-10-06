@@ -57,6 +57,9 @@ _COLUMN_MIGRATIONS = [
      '\'{"health": true, "software": true, "activity": false, "file_events": false, "screenshots": true}\''),
     ("licenses", "license_type", "VARCHAR(32)", "'subscription_monthly'"),
     ("admin_users", "cred_seq", "INTEGER", "0"),
+    ("tenants", "client_server_version", "VARCHAR(50)", "NULL"),
+    ("tenants", "client_server_updated_at", "DATETIME", "NULL"),
+    ("tenants", "last_sync_at", "DATETIME", "NULL"),
 ]
 
 

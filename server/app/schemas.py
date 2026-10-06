@@ -63,6 +63,9 @@ class TenantOut(ORM):
     contact_phone: str | None = None
     evidence_retention_days: int
     event_retention_days: int
+    client_server_version: str | None = None
+    client_server_updated_at: datetime | None = None
+    last_sync_at: datetime | None = None
     created_at: datetime
 
 

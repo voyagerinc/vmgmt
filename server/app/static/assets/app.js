@@ -616,11 +616,24 @@ VIEWS.licenses = async (main) => {
 function renderTenantTable(tenants){
   const isPlatform=S.role==="platform_super_admin";
   const wrap=el(`<div></div>`);
-  const t=tableFrom(["Company","Registered email","Status","Retention","Actions"],
-    tenants.map(t=>[esc(t.company_name),esc(t.contact_email||"—"),statusBadge(t.status),
-      `${t.evidence_retention_days}d ev / ${t.event_retention_days}d evt`,
-      `<button class="btn sm ghost" data-view="${t.id}">View data</button>`+
-      (isPlatform?` <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>`:"")]));
+  const t=tableFrom(["Company","Registered email","Client Server Version & Update","Status","Retention","Actions"],
+    tenants.map(t=>{
+      const verBadge = t.client_server_version
+        ? `<span class="badge b-ok">${esc(t.client_server_version)}</span>`
+        : `<span class="badge b-off">Offline / Not reported</span>`;
+      const updStr = t.client_server_updated_at ? `<div class="muted" style="font-size:11px">Updated: ${fmtDate(t.client_server_updated_at)}</div>` : "";
+      const syncStr = t.last_sync_at ? `<div class="muted" style="font-size:10px">Synced: ${fmtDate(t.last_sync_at)}</div>` : "";
+      const verCol = `<div>${verBadge}${updStr}${syncStr}</div>`;
+      return [
+        esc(t.company_name),
+        esc(t.contact_email||"—"),
+        verCol,
+        statusBadge(t.status),
+        `${t.evidence_retention_days}d ev / ${t.event_retention_days}d evt`,
+        `<button class="btn sm ghost" data-view="${t.id}">View data</button>`+
+        (isPlatform?` <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>`:"")
+      ];
+    }));
   wrap.appendChild(t);
   wrap.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>{ S.activeTenant=b.dataset.view; localStorage.setItem("emp_active_tenant",S.activeTenant); toast("Tenant selected"); location.hash="dashboard"; });
   wrap.querySelectorAll("[data-cred]").forEach(b=>b.onclick=()=>showCredentials(tenants.find(x=>x.id===b.dataset.cred)));
@@ -1084,6 +1097,16 @@ function renderLogin(){
   card.querySelectorAll("input").forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin();}));
   card.querySelector("#forgotUser").onclick=(e)=>{e.preventDefault();forgotFlow("username");};
   card.querySelector("#forgotPw").onclick=(e)=>{e.preventDefault();resetChooser();};
+
+  api("/api/meta").then(m => {
+    if(!m) return;
+    const vStr = esc(m.version_display || ("v" + m.version));
+    const uStr = m.updated_at ? fmtDate(m.updated_at) : "—";
+    const verDiv = el(`<div class="sub" style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;font-size:0.8rem;color:var(--muted)">
+      Current Version: <b style="color:var(--accent,#38bdf8)">${vStr}</b> · Last Updated: <b>${uStr}</b>
+    </div>`);
+    card.appendChild(verDiv);
+  }).catch(()=>{});
 }
 
 function resetChooser(){

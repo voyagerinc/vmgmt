@@ -132,6 +132,9 @@ class Tenant(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     evidence_retention_days: Mapped[int] = mapped_column(Integer, default=30)
     event_retention_days: Mapped[int] = mapped_column(Integer, default=90)
+    client_server_version: Mapped[str | None] = mapped_column(String(50))
+    client_server_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     licenses: Mapped[list["License"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")

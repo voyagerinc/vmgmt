@@ -29,7 +29,25 @@ def run_client_sync(db: Session) -> dict:
     if not lic or not lic.signature:
         return {"synced": False, "changed": [], "detail": "No activated license to sync"}
 
-    payload = json.dumps({"license_id": lic.id, "license_key": lic.signature}).encode()
+    from .. import __version__, get_build
+    from ..config import BASE_DIR
+    bid = get_build()
+    v_display = f"v{__version__}" + (f" ({bid})" if bid else "")
+
+    mtime = None
+    try:
+        main_py = BASE_DIR / "app" / "main.py"
+        if main_py.exists():
+            mtime = datetime.fromtimestamp(main_py.stat().st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+
+    payload = json.dumps({
+        "license_id": lic.id,
+        "license_key": lic.signature,
+        "client_version": v_display,
+        "client_updated_at": mtime,
+    }).encode()
     req = urllib.request.Request(f"{server}/api/license/sync", data=payload,
                                  headers={"Content-Type": "application/json"}, method="POST")
     try:

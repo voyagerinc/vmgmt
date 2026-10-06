@@ -6,14 +6,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
 
 from . import __version__
 from .config import LOG_DIR, settings
-from .database import SessionLocal, init_db
+from .database import SessionLocal, get_db, init_db
 from .bootstrap import ensure_bootstrap
 from .routers import (
     agents,
@@ -191,11 +192,31 @@ def health():
 
 
 @app.get("/api/meta", tags=["system"])
-def meta():
-    return {"app_name": settings.app_name, "version": __version__,
-            "heartbeat_interval": settings.heartbeat_interval_seconds,
-            "server_url": settings.server_public_url,
-            "license_server": settings.license_server}
+def meta(db: Session = Depends(get_db)):
+    from . import get_build
+    from .services import settings_service as ss
+    binfo = ss.get_setting(db, "build", None) or {}
+    bid = get_build()
+    v_display = f"v{__version__}" + (f" ({bid})" if bid else "")
+    mtime = None
+    try:
+        main_py = BASE_DIR / "app" / "main.py"
+        if main_py.exists():
+            mtime = datetime.fromtimestamp(main_py.stat().st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+    updated_at = binfo.get("updated_at") or mtime
+    return {
+        "app_name": settings.app_name,
+        "version": __version__,
+        "build": bid,
+        "version_display": v_display,
+        "updated_at": updated_at,
+        "heartbeat_interval": settings.heartbeat_interval_seconds,
+        "server_url": settings.server_public_url,
+        "license_server": settings.license_server,
+        "role": "license_server" if not settings.license_server else "client_server",
+    }
 
 
 # ---- static admin console (SPA) ----
