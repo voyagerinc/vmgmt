@@ -138,6 +138,10 @@ def updates_latest():
 def updates_download(component: str):
     """Serve a staged binary to client servers / agents."""
     path = {"server": SERVER_EXE, "agent": AGENT_EXE, "bundle": BUNDLE}.get(component)
+    if component == "bundle" and (not path or not path.exists()):
+        alt = REPO_DIR / "EndpointManagementServer-Universal-Windows.zip"
+        if alt.exists():
+            path = alt
     if not path or not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No staged {component} build")
     return Response(content=path.read_bytes(), media_type="application/octet-stream",

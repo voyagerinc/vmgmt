@@ -105,9 +105,14 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
 @router.get("/server-bundle")
 def download_server_bundle(user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
     """Python-3.8 source bundle for Windows Server 2012 clients (SETUP_AND_RUN.bat / UPDATE.bat)."""
-    if not SERVER_BUNDLE.exists():
+    target = SERVER_BUNDLE
+    if not target.exists():
+        alt = PROJECT_ROOT / "EndpointManagementServer-Universal-Windows.zip"
+        if alt.exists():
+            target = alt
+    if not target.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No Server 2012 bundle staged on this server")
-    return Response(content=SERVER_BUNDLE.read_bytes(), media_type="application/zip",
+    return Response(content=target.read_bytes(), media_type="application/zip",
                     headers={"Content-Disposition":
                              'attachment; filename="EndpointManagementServer-Universal-Windows.zip"'})
 
