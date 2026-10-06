@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -106,6 +107,34 @@ def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(_UPD))
     }
 
 
+def _get_or_build_bundle() -> Path | None:
+    target = BUNDLE if BUNDLE.parent.exists() else (REPO_DIR / "EndpointManagementServer-Universal-Windows.zip")
+    main_py = BASE_DIR / "app" / "main.py"
+    needs_build = not target.exists()
+    if target.exists() and main_py.exists():
+        try:
+            if main_py.stat().st_mtime > target.stat().st_mtime:
+                needs_build = True
+        except Exception:
+            pass
+
+    if needs_build:
+        try:
+            builder = REPO_DIR / "installers" / "build_universal_bundle.py"
+            if builder.exists():
+                _run([sys.executable, str(builder)], cwd=REPO_DIR, timeout=60)
+                root_zip = REPO_DIR / "EndpointManagementServer-Universal-Windows.zip"
+                if root_zip.exists() and target != root_zip:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(root_zip, target)
+        except Exception:
+            pass
+    if target.exists():
+        return target
+    alt = REPO_DIR / "EndpointManagementServer-Universal-Windows.zip"
+    return alt if alt.exists() else None
+
+
 # --------------------------------------------------------------- LICENSE SERVER: publish
 @router.get("/updates/latest")
 def updates_latest():
@@ -127,21 +156,20 @@ def updates_latest():
         man["agent"] = {"version": versions.get("agent", __version__),
                         "url": f"{base}/api/updates/download/agent",
                         "sha256": _sha256(AGENT_EXE), "size": AGENT_EXE.stat().st_size}
-    if BUNDLE.exists():
+    bundle_path = _get_or_build_bundle()
+    if bundle_path and bundle_path.exists():
         man["bundle"] = {"version": versions.get("server", __version__),
                          "url": f"{base}/api/updates/download/bundle",
-                         "sha256": _sha256(BUNDLE), "size": BUNDLE.stat().st_size}
+                         "sha256": _sha256(bundle_path), "size": bundle_path.stat().st_size}
     return {"code_version": __version__, "components": man}
 
 
 @router.get("/updates/download/{component}")
 def updates_download(component: str):
     """Serve a staged binary to client servers / agents."""
-    path = {"server": SERVER_EXE, "agent": AGENT_EXE, "bundle": BUNDLE}.get(component)
-    if component == "bundle" and (not path or not path.exists()):
-        alt = REPO_DIR / "EndpointManagementServer-Universal-Windows.zip"
-        if alt.exists():
-            path = alt
+    path = {"server": SERVER_EXE, "agent": AGENT_EXE}.get(component)
+    if component == "bundle":
+        path = _get_or_build_bundle()
     if not path or not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No staged {component} build")
     return Response(content=path.read_bytes(), media_type="application/octet-stream",
