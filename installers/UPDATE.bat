@@ -25,7 +25,7 @@ if exist "server\.env" (
 )
 if not defined LIC (
   echo [ERROR] EMP_LICENSE_SERVER is not set in server\.env
-  echo         e.g.  EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:8084
+  echo         e.g.  EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:9084
   pause & exit /b 1
 )
 set "LIC=%LIC: =%"

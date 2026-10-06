@@ -356,6 +356,9 @@ def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
         "contact_email": tenant.contact_email,
         "owner_email": owner.email if owner else None,
         "owner_name": owner.full_name if owner else "Account Owner",
+        # hash only (never plaintext) so the cloud-issued password also works on-prem
+        "owner_password_hash": owner.password_hash if owner else None,
+        "cred_seq": owner.cred_seq if owner else 0,
         "edition": lic.edition.value,
         "license_type": lic.license_type.value,
         "expiry": lic.expiry_date.isoformat(),
@@ -576,18 +579,30 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
 
     owner_email = (info.get("owner_email") or info.get("contact_email") or "").lower()
     created_pw = None
+    cloud_hash = info.get("owner_password_hash")
+    cloud_seq = int(info.get("cred_seq") or 0)
     if owner_email:
         owner = db.query(AdminUser).filter(AdminUser.tenant_id == tenant.id,
                                            AdminUser.email == owner_email).first()
         if not owner:
-            created_pw = owner_pw or secrets.token_urlsafe(10)
             owner = AdminUser(tenant_id=tenant.id, email=owner_email,
                               full_name=info.get("owner_name", "Account Owner"),
-                              password_hash=hash_password(created_pw), role=Role.CUSTOMER_OWNER)
+                              role=Role.CUSTOMER_OWNER)
             db.add(owner)
-        elif owner_pw:
+        if owner_pw:
             owner.password_hash = hash_password(owner_pw)
             created_pw = owner_pw
+        elif cloud_hash:
+            # no local password given: use the password issued on the cloud license server
+            owner.password_hash = cloud_hash
+            owner.cred_seq = cloud_seq
+        elif not owner.password_hash:
+            # older cloud server that does not send the hash: fall back to a generated one
+            created_pw = secrets.token_urlsafe(10)
+            owner.password_hash = hash_password(created_pw)
+        owner.is_active = True
+        owner.failed_logins = 0
+        owner.locked_until = None
 
     audit.record(db, action="license_activate", tenant_id=tenant.id, actor_id=user.id,
                  actor_email=user.email, target_type="license", target_id=lic.id,
@@ -595,6 +610,7 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
     db.commit()
     return {"ok": True, "company_name": tenant.company_name, "owner_email": owner_email,
             "owner_password": created_pw,
+            "password_source": "local" if owner_pw else ("cloud" if cloud_hash else "generated"),
             "message": "License activated. Sign in with the company admin account below."}
 
 

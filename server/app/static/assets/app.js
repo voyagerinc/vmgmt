@@ -733,7 +733,7 @@ async function activateOnline(main){
     {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:8084"},
     {k:"license_id",label:"License ID"},
     {k:"license_key",label:"License Key",type:"textarea"},
-    {k:"owner_password",label:"Company admin password (set/confirm for this server)",type:"password"},
+    {k:"owner_password",label:"Company admin password (leave blank = use the password issued on the cloud)",type:"password"},
   ]);
   modal("Activate this server from the license server",f,async()=>{
     const v=f._values();
@@ -743,7 +743,7 @@ async function activateOnline(main){
     const out=el(`<div><p class="muted">${esc(r.message||"Activated.")}</p>
       <pre class="json">Company  : ${esc(r.company_name)}
 Username : ${esc(r.owner_email||"—")}
-Password : ${esc(r.owner_password||"(unchanged — use the password you set)")}</pre>
+Password : ${esc(r.owner_password||(r.password_source==="cloud"?"(same password as issued on the cloud license server)":"(unchanged — use the password you set)"))}</pre>
       <p class="muted">Sign out and sign in with the company admin above to manage this company.</p></div>`);
     modal("Server activated",out,null,"Done");
     VIEWS.licenses(main);

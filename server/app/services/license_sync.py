@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
