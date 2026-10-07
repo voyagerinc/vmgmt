@@ -1116,7 +1116,7 @@ function renderLogin(){
       <a href="#" id="forgotUser">Forgot username?</a>
       <a href="#" id="forgotPw" style="color:var(--accent,#38bdf8);font-weight:600;">📁 Reset via .txt File / Password</a>
     </div>
-    <p class="sub" style="margin-top:12px">First-run credentials are printed to the server console and <code>FIRST_RUN.txt</code>.</p>
+    <p class="sub" style="margin-top:12px">First-time sign-in: <code>superadmin@platform.local</code> with the default password (see <code>FIRST_RUN.txt</code>). Change it after login.</p>
     <div id="loginVerBox" class="sub" style="margin-top:14px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;font-size:0.8rem;color:var(--muted)">
       Current Version: <b style="color:var(--accent,#38bdf8)">v4.1.0</b> · Last Updated: <b>—</b>
     </div>

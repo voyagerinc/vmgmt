@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from .config import BASE_DIR
+from .config import BASE_DIR, settings
 from .models import (
     AdminUser,
     EnrollmentToken,
@@ -29,7 +29,7 @@ def ensure_bootstrap(db: Session) -> None:
         db.commit()
         return  # already bootstrapped
 
-    super_pw = secrets.token_urlsafe(12)
+    super_pw = settings.default_admin_password or secrets.token_urlsafe(12)
     owner_pw = secrets.token_urlsafe(12)
 
     superadmin = AdminUser(

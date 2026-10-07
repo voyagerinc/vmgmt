@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     max_failed_logins: int = 8
     lockout_minutes: int = 15
     require_mfa: bool = False
+    # Fixed first-run Super Admin password for every new server (EMP_DEFAULT_ADMIN_PASSWORD overrides).
+    default_admin_password: str = "Vmgmt@99887766778899"
 
     # Evidence encryption key (Fernet). Auto-generated into .evidence_key on first run.
     evidence_key: str = ""
