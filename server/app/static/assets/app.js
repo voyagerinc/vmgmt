@@ -730,7 +730,7 @@ Password : ${esc(r.new_password)}</pre>
 async function activateOnline(main){
   const meta=await api("/api/meta").catch(()=>({}));
   const f=fields([
-    {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:8084"},
+    {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:9084"},
     {k:"license_id",label:"License ID"},
     {k:"license_key",label:"License Key",type:"textarea"},
     {k:"owner_password",label:"Company admin password (leave blank = use the password issued on the cloud)",type:"password"},

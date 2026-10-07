@@ -36,15 +36,7 @@ echo [1/6] Python:
 "%PY%" --version
 if errorlevel 1 goto :fail
 
-if not exist ".env" (
-  echo Creating default configuration: .env ...
-  >  ".env" echo EMP_HOST=0.0.0.0
-  >> ".env" echo EMP_PORT=9084
-  >> ".env" echo EMP_SERVER_PUBLIC_URL=http://THIS-SERVER-IP:9084
-  >> ".env" echo EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:9084
-  >> ".env" echo EMP_DEPLOYMENT_MODEL=on_premise
-  echo   NOTE: edit .env and set EMP_SERVER_PUBLIC_URL to this server's IP.
-)
+rem server\.env is created automatically by the server on first start (LAN IP auto-detected)
 
 echo [2/6] Upgrading pip...
 "%PY%" -m pip install --upgrade "pip<26" 

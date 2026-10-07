@@ -23,6 +23,52 @@ LOG_DIR = (DATA_DIR / "logs") if _data_override else BASE_DIR / "logs"
 for _d in (DATA_DIR, EVIDENCE_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_LICENSE_SERVER = "http://vmgmt.voyager.co.in:9084"
+
+
+def _detect_lan_ip() -> str:
+    """Best-effort LAN IP of this machine (the address agents on other PCs will use)."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))          # UDP: no packet is sent, only picks the route
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
+
+
+def _ensure_client_env() -> None:
+    """On-premise client servers (Windows installs): create server/.env on first start so the
+    server listens on the LAN, agents get a reachable URL and activation/UPDATE.bat know the
+    license server. Never overwrites an existing .env; skipped on the Linux cloud license
+    server and in a source checkout."""
+    env_file = BASE_DIR / ".env"
+    if env_file.exists() or os.name != "nt" or (BASE_DIR.parent / ".git").exists():
+        return
+    ip = _detect_lan_ip()
+    try:
+        env_file.write_text(
+            "# Created automatically on first start. Edit and restart the server to change.\n"
+            "EMP_DEPLOYMENT_MODEL=on_premise\n"
+            "EMP_HOST=0.0.0.0\n"
+            "EMP_PORT=9084\n"
+            f"# Address agents on employee PCs connect to (auto-detected: {ip})\n"
+            f"EMP_SERVER_PUBLIC_URL=http://{ip}:9084\n"
+            f"EMP_LICENSE_SERVER={DEFAULT_LICENSE_SERVER}\n",
+            encoding="utf-8")
+        print(f"[config] Created {env_file} (server URL http://{ip}:9084)")
+    except Exception as e:
+        print(f"[config] Could not create {env_file}: {e}")
+
+
+_ensure_client_env()
+
 
 class Settings(BaseSettings):
     """All settings overridable via environment or server/.env file."""
@@ -62,7 +108,7 @@ class Settings(BaseSettings):
     def resolve_license_server(self) -> str:
         srv = (self.license_server or "").strip()
         if not srv:
-            srv = "http://vmgmt.voyager.co.in:9084"
+            srv = DEFAULT_LICENSE_SERVER
         if not srv.startswith("http://") and not srv.startswith("https://"):
             srv = "http://" + srv
         return srv.rstrip("/")
