@@ -166,6 +166,16 @@ def _convert_source(src: str) -> str:
     return out
 
 
+def _raw(fp: Path) -> bytes:
+    """File bytes for the zip. Windows scripts get CRLF line endings: the bundle is built on the
+    Linux cloud from an LF checkout, and cmd.exe misparses LF-only .bat files (it runs fragments
+    of the wrong lines, e.g. "'...python.exe" -c "import' is not recognized")."""
+    data = fp.read_bytes()
+    if fp.suffix.lower() in (".bat", ".cmd"):
+        data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return data
+
+
 def _add_tree(zf: zipfile.ZipFile, base: Path, arc_prefix: str, convert: bool,
               exclude_rel: set | None = None) -> None:
     exclude_rel = exclude_rel or set()
@@ -187,7 +197,7 @@ def _add_tree(zf: zipfile.ZipFile, base: Path, arc_prefix: str, convert: bool,
         if convert and fp.suffix == ".py":
             zf.writestr(arc, _convert_source(fp.read_text(encoding="utf-8")))
         else:
-            zf.writestr(arc, fp.read_bytes())
+            zf.writestr(arc, _raw(fp))
 
 
 # Scaffolding lives in the repo (installers/win2012_scaffold/) so the bundle is fully
@@ -226,10 +236,10 @@ def main() -> int:
         for repo_file, arc in SCAFFOLD_MAP.items():
             fp = SCAFFOLD_DIR / repo_file
             if fp.exists():
-                zf.writestr(arc, fp.read_bytes())
+                zf.writestr(arc, _raw(fp))
         upd = HERE / "UPDATE.bat"
         if upd.exists():
-            zf.writestr("UPDATE.bat", upd.read_bytes())
+            zf.writestr("UPDATE.bat", _raw(upd))
         # bake a unique build id so clients show a changing version + date on every update
         import datetime as _dt
         import subprocess as _sp
