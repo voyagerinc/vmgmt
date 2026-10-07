@@ -257,6 +257,12 @@ def main() -> int:
 
     OUT_ZIP.write_bytes(buf.getvalue())
     print(f"Wrote {OUT_ZIP}  ({OUT_ZIP.stat().st_size // 1024} KB)")
+
+    dist_dir = SERVER / "server_dist"
+    if dist_dir.exists():
+        dist_zip = dist_dir / "EndpointManagementServer-Universal-Windows.zip"
+        dist_zip.write_bytes(buf.getvalue())
+        print(f"Wrote {dist_zip}  ({dist_zip.stat().st_size // 1024} KB)")
     return 0
 
 

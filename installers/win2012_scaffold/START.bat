@@ -27,7 +27,7 @@ set "PY="
 if exist "D:\Python\python.exe" set "PY=D:\Python\python.exe"
 if not defined PY ( where python >nul 2>&1 && set "PY=python" )
 if defined PY (
-  "%PY%" -c "import sys;exit(0 if sys.version_info>=(3,8) else 1)" >nul 2>&1 || set "PY="
+  "%PY%" -c "import sys; exit(0 if sys.version_info.major == 3 and sys.version_info.minor >= 8 else 1)" >nul 2>&1 || set "PY="
 )
 
 if not defined PY (

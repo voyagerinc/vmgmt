@@ -109,12 +109,24 @@ def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(_UPD))
 
 def _get_or_build_bundle() -> Path | None:
     target = BUNDLE if BUNDLE.parent.exists() else (REPO_DIR / "EndpointManagementServer-Universal-Windows.zip")
-    main_py = BASE_DIR / "app" / "main.py"
     needs_build = not target.exists()
-    if target.exists() and main_py.exists():
+    if target.exists():
         try:
-            if main_py.stat().st_mtime > target.stat().st_mtime:
-                needs_build = True
+            scaffold = REPO_DIR / "installers" / "win2012_scaffold"
+            builder = REPO_DIR / "installers" / "build_universal_bundle.py"
+            t_mtime = target.stat().st_mtime
+            check_paths = [
+                BASE_DIR / "app" / "main.py",
+                builder,
+                scaffold / "SETUP_AND_RUN.bat",
+                scaffold / "START.bat",
+                scaffold / "requirements-win38.txt",
+                scaffold / "doctor.py",
+            ]
+            for p in check_paths:
+                if p.exists() and p.stat().st_mtime > t_mtime:
+                    needs_build = True
+                    break
         except Exception:
             pass
 
