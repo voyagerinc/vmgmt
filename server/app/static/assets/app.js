@@ -641,6 +641,7 @@ VIEWS.licenses = async (main) => {
   if(isPlatform){
     const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b);
     const dlSrv=el(`<button class="btn sm ghost">⬇ Download Client Server Setup</button>`); dlSrv.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe"); tools.push(dlSrv);
+    const dlUni=el(`<button class="btn sm ghost">⬇ Universal Zip (Server 2012+)</button>`); dlUni.onclick=()=>downloadWithAuth("/api/download/server-bundle","EndpointManagementServer-Universal-Windows.zip"); tools.push(dlUni);
     const a=el(`<button class="btn sm">🔑 Activate with .lic file</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
   }
   main.appendChild(topbar("Licenses & Tenants",tools));
