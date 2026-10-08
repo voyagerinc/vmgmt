@@ -75,26 +75,19 @@ echo [5/5] Installing and starting the Windows service ...
 "%PY%" server_service.py install >nul 2>&1
 sc config EndpointMgmtServer start= auto >nul 2>&1
 sc start EndpointMgmtServer >nul 2>&1
-sc query EndpointMgmtServer | find "RUNNING" >nul 2>&1
-if not errorlevel 1 (
-  start "" http://127.0.0.1:9084/
-  echo.
-  echo ================================================================
-  echo   Server is running as a Windows SERVICE.
-  echo   It keeps running after you close this window, and auto-starts on boot.
-  echo   Admin console : http://127.0.0.1:9084/
-  echo   First-run login: server\FIRST_RUN.txt
-  echo   To update later: run UPDATE.bat as administrator.
-  echo ================================================================
-  pause
-  goto :eof
-)
+echo Waiting for the server to start ...
+call :waitport
+if not errorlevel 1 goto :svc_ok
 
 echo Service mode unavailable - starting in the BACKGROUND instead ...
+sc stop EndpointMgmtServer >nul 2>&1
 rem detached, no console window -> survives closing this window (pythonw = no window)
 set "PYW=%PY%"
-if /i "%PY%"=="python" ( set "PYW=pythonw" ) else ( set "PYW=%PY:python.exe=pythonw.exe%" )
+if /i "%PY%"=="python" set "PYW=pythonw"
+if /i not "%PY%"=="python" set "PYW=%PY:python.exe=pythonw.exe%"
 start "VoyagerServer" "%PYW%" run_server.py --no-browser
+call :waitport
+if errorlevel 1 goto :not_started
 start "" http://127.0.0.1:9084/
 echo.
 echo ================================================================
@@ -105,3 +98,41 @@ echo   To stop it: open Task Manager and end the pythonw.exe process,
 echo   or use SERVER_CONTROL.bat.
 echo ================================================================
 pause
+goto :eof
+
+:svc_ok
+start "" http://127.0.0.1:9084/
+echo.
+echo ================================================================
+echo   Server is running as a Windows SERVICE.
+echo   It keeps running after you close this window, and auto-starts on boot.
+echo   Admin console : http://127.0.0.1:9084/
+echo   First-run login: superadmin@platform.local  (see server\FIRST_RUN.txt)
+echo   To update later: run UPDATE.bat as administrator.
+echo ================================================================
+pause
+goto :eof
+
+:not_started
+echo.
+echo ================================================================
+echo   [ERROR] The server did not start listening on port 9084.
+echo   Last lines of server\logs\server.log :
+echo ================================================================
+powershell -NoProfile -Command "if (Test-Path 'logs\server.log') { Get-Content 'logs\server.log' -Tail 25 }"
+echo.
+echo   To see the error directly, run:  "%PY%" run_server.py
+echo   from the server folder and send a screenshot of the output.
+pause
+exit /b 1
+
+rem ---- wait up to ~30s for port 9084 to be listening; errorlevel 0 = up ----
+:waitport
+set /a "WAITS=0"
+:waitport_loop
+netstat -an | findstr /R /C:":9084 .*LISTENING" >nul 2>&1
+if not errorlevel 1 exit /b 0
+set /a "WAITS+=1"
+if %WAITS% GEQ 15 exit /b 1
+ping -n 3 127.0.0.1 >nul
+goto :waitport_loop

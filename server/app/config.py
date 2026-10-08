@@ -23,6 +23,18 @@ LOG_DIR = (DATA_DIR / "logs") if _data_override else BASE_DIR / "logs"
 for _d in (DATA_DIR, EVIDENCE_DIR, LOG_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
+# Without a console (pythonw.exe background start, Windows service) sys.stdout/stderr are None
+# and uvicorn crashes at startup on sys.stdout.isatty(). Send output to logs/server.log instead.
+if sys.stdout is None or sys.stderr is None:
+    try:
+        _console_log = open(LOG_DIR / "server.log", "a", encoding="utf-8", buffering=1)
+    except Exception:
+        _console_log = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = _console_log
+    if sys.stderr is None:
+        sys.stderr = _console_log
+
 DEFAULT_LICENSE_SERVER = "http://vmgmt.voyager.co.in:9084"
 
 
