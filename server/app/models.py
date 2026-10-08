@@ -159,6 +159,7 @@ class License(Base):
     max_devices: Mapped[int] = mapped_column(Integer, default=25)
     max_admins: Mapped[int] = mapped_column(Integer, default=3)
     max_storage_mb: Mapped[int] = mapped_column(Integer, default=10240)
+    branch_name: Mapped[str | None] = mapped_column(String(120))   # None = main office
     features: Mapped[dict] = mapped_column(JSON, default=dict)     # module entitlements
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     grace_days: Mapped[int] = mapped_column(Integer, default=7)

@@ -70,6 +70,7 @@ class TenantOut(ORM):
 
 
 class LicenseIn(BaseModel):
+    branch_name: str | None = None          # required when the company already has a license
     edition: LicenseEdition = LicenseEdition.STANDARD
     license_type: LicenseType = LicenseType.SUBSCRIPTION_MONTHLY
     term_days: int = 365
@@ -94,6 +95,16 @@ class LicenseOut(ORM):
     max_storage_mb: int
     features: dict
     is_demo: bool
+    branch_name: str | None = None
+    activated_server_id: str | None = None
+
+
+class LicenseUpdateIn(BaseModel):
+    """Increase / change an existing license instead of issuing a second one."""
+    max_devices: int | None = None
+    max_admins: int | None = None
+    extend_days: int = 0
+    branch_name: str | None = None
 
 
 class LicensePackageOut(BaseModel):
@@ -102,6 +113,8 @@ class LicensePackageOut(BaseModel):
     activation_token: str
     company_name: str
     server_hint: str
+    branch_name: str | None = None
+    download_url: str | None = None
 
 
 class ActivateIn(BaseModel):
@@ -117,6 +130,7 @@ class ProvisionIn(BaseModel):
     contact_email: str                      # registered email (receives the license key)
     contact_phone: str | None = None
     deployment_model: str = "on_premise"
+    branch_name: str | None = None          # optional: name of the site this first license is for
     # owner account
     owner_email: str | None = None          # defaults to contact_email
     owner_name: str = "Account Owner"

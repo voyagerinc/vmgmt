@@ -729,19 +729,47 @@ Password : ${esc(r.new_password)}</pre>
 }
 async function activateOnline(main){
   const meta=await api("/api/meta").catch(()=>({}));
+  const wrap=el(`<div>
+    <div class="field"><label>Attach license file (.lic) — fills in License ID and Key automatically</label>
+      <input type="file" accept=".lic,.json,.txt" /></div>
+    <div class="notice" style="display:none"></div></div>`);
   const f=fields([
-    {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:9084"},
+    {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:8084"},
     {k:"license_id",label:"License ID"},
     {k:"license_key",label:"License Key",type:"textarea"},
     {k:"owner_password",label:"Company admin password (leave blank = use the password issued on the cloud)",type:"password"},
   ]);
-  modal("Activate this server from the license server",f,async()=>{
+  wrap.appendChild(f);
+  const pwInp=f.querySelectorAll("input")[f.querySelectorAll("input").length-1];
+  pwInp.autocomplete="new-password";            // stop the browser auto-filling a saved password
+  const preview=wrap.querySelector(".notice");
+  const applyLic=(txt)=>{
+    let d; try{ d=JSON.parse(txt); }catch{ throw new Error("This is not a valid .lic file."); }
+    if(!d.license_id||!d.license_key) throw new Error("The .lic file has no License ID / License Key.");
+    const ins=f.querySelectorAll("input,textarea");
+    ins[1].value=d.license_id; ins[2].value=d.license_key;
+    preview.style.display="block";
+    preview.innerHTML=`Company: <b>${esc(d.company||"—")}</b>${d.branch?` · Branch: <b>${esc(d.branch)}</b>`:""}`+
+      ` · Devices: ${esc(d.max_devices??"—")} · Expires: ${d.expiry?esc(fmtDate(d.expiry)):"—"}`;
+  };
+  wrap.querySelector("input[type=file]").onchange=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const rd=new FileReader();
+    rd.onload=()=>{ try{ applyLic(String(rd.result).replace(/^﻿/,"")); toast("License file loaded"); }catch(err){ toast(err.message,true); } };
+    rd.readAsText(file);
+  };
+  modal("Activate this server from the license server",wrap,async()=>{
     const v=f._values();
+    let key=v.license_key.trim();
+    if(key.startsWith("{")){ applyLic(key); key=f._values().license_key.trim(); }   // whole .lic pasted
+    const lid=f._values().license_id.trim();
+    if(!lid||!key) throw new Error("Attach the .lic file, or enter License ID and License Key.");
     const r=await api("/api/license/activate-online",{method:"POST",body:{
-      license_server:v.license_server.trim(), license_id:v.license_id.trim(),
-      license_key:v.license_key.trim(), owner_password:v.owner_password}});
+      license_server:v.license_server.trim(), license_id:lid,
+      license_key:key, owner_password:v.owner_password}});
     const out=el(`<div><p class="muted">${esc(r.message||"Activated.")}</p>
-      <pre class="json">Company  : ${esc(r.company_name)}
+      <pre class="json">Company  : ${esc(r.company_name)}${r.branch_name?`\nBranch   : ${esc(r.branch_name)}`:""}
+Devices  : ${esc(r.max_devices??"—")}
 Username : ${esc(r.owner_email||"—")}
 Password : ${esc(r.owner_password||(r.password_source==="cloud"?"(same password as issued on the cloud license server)":"(unchanged — use the password you set)"))}</pre>
       <p class="muted">Sign out and sign in with the company admin above to manage this company.</p></div>`);
@@ -758,6 +786,7 @@ function addTenant(main){
     {k:"owner_name",label:"Owner name",value:"Account Owner"},
     {k:"owner_email",label:"Owner username / email (blank = registered email)",type:"email"},
     {k:"owner_password",label:"Owner password (blank = auto-generate)",type:"text"},
+    {k:"branch_name",label:"Branch / site name (optional — blank = main office)"},
     {k:"edition",label:"License edition",type:"select",options:["standard","enterprise","demo","custom"],value:"standard"},
     {k:"license_type",label:"License type",type:"select",options:[{v:"subscription_monthly",t:"Subscription (monthly)"},{v:"lifetime",t:"Lifetime (one-time, 1yr support)"}],value:"subscription_monthly"},
     {k:"term_days",label:"Term (days) — ignored for lifetime",type:"number",value:365},
@@ -766,6 +795,7 @@ function addTenant(main){
   modal("New customer — create account, license & email key",f,async()=>{
     const v=f._values();
     const body={company_name:v.company_name,contact_email:v.contact_email,deployment_model:v.deployment_model,
+      branch_name:v.branch_name||null,
       owner_name:v.owner_name,owner_email:v.owner_email||null,owner_password:v.owner_password||null,
       edition:v.edition,license_type:v.license_type,term_days:+v.term_days,max_devices:+v.max_devices,send_email:true};
     const r=await api("/api/tenants/provision",{method:"POST",body});
@@ -804,30 +834,69 @@ async function downloadWithAuth(path, filename){
     a.remove(); URL.revokeObjectURL(url); toast("Downloaded "+filename);
   }catch(e){ toast(e.message,true); }
 }
-function addLicense(tenantId){
+async function addLicense(tenantId){
+  const existing=await api(`/api/tenants/${tenantId}/licenses`).catch(()=>[]);
+  const live=existing.filter(l=>l.status!=="revoked");
   const f=fields([
+    {k:"branch_name",label:live.length?"Branch name (required — this company already has a license)":"Branch name (optional — blank = main office)"},
     {k:"edition",label:"Edition",type:"select",options:["demo","standard","custom","enterprise"],value:"standard"},
     {k:"term_days",label:"Term (days)",type:"number",value:365},
     {k:"max_devices",label:"Max devices",type:"number",value:25},
     {k:"max_admins",label:"Max admins",type:"number",value:3},
     {k:"is_demo",label:"Demo?",type:"select",options:[{v:"false",t:"No"},{v:"true",t:"Yes"}],value:"false"}]);
+  if(live.length) f.prepend(el(`<div class="notice">This company already has ${live.length} license(s): ${live.map(l=>`<b>${esc(l.branch_name||"Main office")}</b>`).join(", ")}. To add devices, close this and use <b>Licenses → Increase</b>. Create a new license only for a different branch.</div>`));
   modal("Create license",f,async()=>{
     const v=f._values();
-    const pkg=await api(`/api/tenants/${tenantId}/licenses`,{method:"POST",body:{edition:v.edition,term_days:+v.term_days,max_devices:+v.max_devices,max_admins:+v.max_admins,is_demo:v.is_demo==="true"}});
-    const body=el(`<div><p class="muted">Provide this license package to the customer for Server_Setup.exe activation.</p>
-      <pre class="json">License ID:       ${esc(pkg.license_id)}\nActivation token: ${esc(pkg.activation_token)}\nCompany:          ${esc(pkg.company_name)}</pre></div>`);
+    const pkg=await api(`/api/tenants/${tenantId}/licenses`,{method:"POST",body:{branch_name:v.branch_name||null,edition:v.edition,term_days:+v.term_days,max_devices:+v.max_devices,max_admins:+v.max_admins,is_demo:v.is_demo==="true"}});
+    const body=el(`<div><p class="muted">Give the .lic file to the customer and attach it on the client server's activation screen.</p>
+      <pre class="json">Company:     ${esc(pkg.company_name)}${pkg.branch_name?`\nBranch:      ${esc(pkg.branch_name)}`:""}\nLicense ID:  ${esc(pkg.license_id)}\nLicense Key: ${esc(pkg.activation_token)}</pre></div>`);
+    const dl=el(`<button class="btn">⬇ Download license file (.lic)</button>`);
+    dl.onclick=()=>downloadWithAuth(pkg.download_url||`/api/licenses/${pkg.license_id}/key`,"license.lic");
+    body.appendChild(dl);
     modal("License created",body,null);
   },"Create");
 }
-async function showLicenses(tenantId){
+async function showLicenses(tenantId, bgPrev){
+  if(bgPrev) bgPrev.remove();
   const rows=await api(`/api/tenants/${tenantId}/licenses`);
   const body=el(`<div></div>`);
-  body.appendChild(tableFrom(["Edition","Type","Status","Expiry","Devices","Key"],
-    rows.map(l=>[esc(l.edition),l.license_type==="lifetime"?'<span class="badge b-ok">lifetime</span>':'<span class="pill">monthly</span>',
-      statusBadge(l.status),l.license_type==="lifetime"?"—":fmtDate(l.expiry_date),l.max_devices,
-      `<button class="btn sm ghost" data-key="${l.id}">⬇ .lic</button>`])));
+  if(!rows.length) body.appendChild(el(`<p class="muted">No licenses yet. Use <b>+ License</b> to create one.</p>`));
+  body.appendChild(tableFrom(["Branch","Edition","Status","Activated","Expiry","Devices","Admins","Actions"],
+    rows.map(l=>[`<b>${esc(l.branch_name||"Main office")}</b>`,
+      esc(l.edition)+(l.license_type==="lifetime"?' <span class="badge b-ok">lifetime</span>':""),
+      statusBadge(l.status),
+      l.activated?`<span class="badge b-ok">yes</span>${l.activated_server_id?`<div class="muted" style="font-size:10px">${esc(l.activated_server_id)}</div>`:""}`:`<span class="badge b-off">not yet</span>`,
+      l.license_type==="lifetime"?"—":fmtDate(l.expiry_date),l.max_devices,l.max_admins,
+      `<button class="btn sm ghost" data-key="${l.id}">⬇ .lic</button>`+
+      (l.status!=="revoked"?` <button class="btn sm" data-inc="${l.id}">Increase</button> <button class="btn sm ghost" data-rev="${l.id}" style="color:#eab308;border-color:#eab308">Revoke</button>`:"")+
+      (!l.activated?` <button class="btn sm ghost" data-rm="${l.id}" style="color:#ef4444;border-color:#ef4444">Remove</button>`:"")])));
+  const bg=modal("Licenses",body,null,"Close");
   body.querySelectorAll("[data-key]").forEach(b=>b.onclick=()=>downloadWithAuth(`/api/licenses/${b.dataset.key}/key`,"license.lic"));
-  modal("Licenses",body,null,"Close");
+  body.querySelectorAll("[data-inc]").forEach(b=>b.onclick=()=>increaseLicense(rows.find(x=>x.id===b.dataset.inc),tenantId,bg));
+  body.querySelectorAll("[data-rev]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Revoke this license? The client server stops working at its next sync.")) return;
+    try{ await api(`/api/licenses/${b.dataset.rev}/revoke`,{method:"POST"}); toast("License revoked"); showLicenses(tenantId,bg); }catch(e){ toast(e.message,true); }
+  });
+  body.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{
+    if(!confirm("Remove this license? Only possible because it was never activated.")) return;
+    try{ await api(`/api/licenses/${b.dataset.rm}`,{method:"DELETE"}); toast("License removed"); showLicenses(tenantId,bg); }catch(e){ toast(e.message,true); }
+  });
+}
+function increaseLicense(l, tenantId, bgList){
+  const f=fields([
+    {k:"max_devices",label:"Max devices",type:"number",value:l.max_devices},
+    {k:"max_admins",label:"Max admins",type:"number",value:l.max_admins},
+    {k:"extend_days",label:"Extend validity by (days, 0 = no change)",type:"number",value:0},
+    {k:"branch_name",label:"Branch name (blank = main office)",value:l.branch_name||""},
+  ]);
+  f.appendChild(el(`<p class="muted">The client server applies the new limits automatically on its next sync (every 10 minutes). No new key is needed.</p>`));
+  modal(`Increase license — ${esc(l.branch_name||"Main office")}`,f,async()=>{
+    const v=f._values();
+    await api(`/api/licenses/${l.id}/update`,{method:"POST",body:{max_devices:+v.max_devices,max_admins:+v.max_admins,
+      extend_days:+v.extend_days||0,branch_name:v.branch_name}});
+    toast("License updated");
+    showLicenses(tenantId,bgList);
+  },"Save");
 }
 
 VIEWS.audit = async (main) => {

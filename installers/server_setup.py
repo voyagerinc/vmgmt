@@ -79,7 +79,7 @@ def run_gui() -> None:
     rows = [("Install folder", DEFAULT_DIR, "dir"),
             ("Server port", "9084", None),
             ("This server's address (agents connect here)", "http://SERVER-IP:9084", None),
-            ("License server URL (optional)", "http://vmgmt.voyager.co.in:9084", None)]
+            ("License server URL (optional)", "http://vmgmt.voyager.co.in:8084", None)]
     for i, (label, default, kind) in enumerate(rows):
         tk.Label(frm, text=label, bg="#0e1526", fg="#93a2c4").grid(row=i*2, column=0, sticky="w", pady=(8, 0))
         var = tk.StringVar(value=default)

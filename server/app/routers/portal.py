@@ -36,6 +36,7 @@ from ..schemas import (
     LicenseIn,
     LicenseOut,
     LicensePackageOut,
+    LicenseUpdateIn,
     ProvisionIn,
     ProvisionOut,
     TenantIn,
@@ -50,6 +51,7 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
     payload = {
         "product": "Voyager Endpoint Management Platform",
         "company": tenant.company_name,
+        "branch": lic.branch_name or "",
         "tenant_id": tenant.id,
         "license_id": lic.id,
         "license_key": lic.signature,              # signed activation token
@@ -59,9 +61,29 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
         "max_devices": lic.max_devices,
         "max_admins": lic.max_admins,
         "server_url": settings.server_public_url,
-        "instructions": "Enter License ID and License Key in Server_Setup.exe first-run wizard.",
+        "instructions": ("On the client server: Licenses & Tenants -> Activate from license server "
+                         "-> attach this .lic file -> Activate."),
     }
     return json.dumps(payload, indent=2).encode()
+
+
+def _lic_filename(tenant: Tenant, lic: License) -> str:
+    name = tenant.company_name + (f" - {lic.branch_name}" if lic.branch_name else "")
+    return ("".join(c for c in name if c.isalnum() or c in " _-").strip() or "license") + ".lic"
+
+
+def _norm_branch(name: str | None) -> str | None:
+    return " ".join((name or "").split()) or None
+
+
+def _branch_conflict(db: Session, tenant_id: str, branch: str | None, exclude_id: str | None = None):
+    """The tenant's non-revoked license already covering this branch (None = main office)."""
+    for other in db.query(License).filter(License.tenant_id == tenant_id).all():
+        if other.id == exclude_id or other.status == LicenseStatus.REVOKED:
+            continue
+        if (other.branch_name or "").lower() == (branch or "").lower():
+            return other
+    return None
 
 router = APIRouter(prefix="/api", tags=["license-portal"])
 
@@ -178,6 +200,12 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
     t = db.get(Tenant, tenant_id)
     if not t:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Tenant not found")
+    branch = _norm_branch(body.branch_name)
+    if _branch_conflict(db, tenant_id, branch):
+        where = f"branch '{branch}'" if branch else "its main office"
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"{t.company_name} already has a license for {where}. Use 'Increase' on that "
+                            "license to add devices, or enter a different Branch name for a new site.")
     from ..models import LicenseType
     if body.is_demo:
         term = 15
@@ -197,6 +225,7 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
         max_storage_mb=body.max_storage_mb,
         is_demo=body.is_demo or body.edition == LicenseEdition.DEMO,
         features=features,
+        branch_name=branch,
     )
     db.add(lic)
     db.flush()
@@ -204,13 +233,80 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
     lic.signature = token
     audit.record(db, action="license_create", tenant_id=tenant_id, actor_id=admin.id,
                  actor_email=admin.email, target_type="license", target_id=lic.id,
-                 new_value={"edition": lic.edition.value, "expiry": lic.expiry_date.isoformat()},
+                 new_value={"edition": lic.edition.value, "expiry": lic.expiry_date.isoformat(),
+                            "branch": branch},
                  source_ip=client_ip(request))
     db.commit()
     return LicensePackageOut(
         license_id=lic.id, activation_token=token,
-        company_name=t.company_name, server_hint="Enter these in Server_Setup.exe first-run wizard",
+        company_name=t.company_name, server_hint="Attach the .lic file on the client server's activation screen",
+        branch_name=branch, download_url=f"/api/licenses/{lic.id}/key",
     )
+
+
+@router.post("/licenses/{license_id}/update", response_model=LicenseOut,
+             dependencies=[Depends(platform_admin)])
+def update_license(license_id: str, body: LicenseUpdateIn, request: Request,
+                   db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
+    """Increase devices/admins, extend the term or rename the branch of an existing license.
+    The client server picks the new limits up on its next sync - no new key needed."""
+    lic = db.get(License, license_id)
+    if not lic:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "License not found")
+    t = db.get(Tenant, lic.tenant_id)
+    old = {"max_devices": lic.max_devices, "max_admins": lic.max_admins,
+           "expiry": lic.expiry_date.isoformat(), "branch": lic.branch_name}
+    if body.max_devices is not None:
+        if body.max_devices < 1:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Max devices must be at least 1")
+        lic.max_devices = body.max_devices
+    if body.max_admins is not None:
+        if body.max_admins < 1:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Max admins must be at least 1")
+        lic.max_admins = body.max_admins
+    if body.extend_days:
+        if body.extend_days < 0:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Extend days cannot be negative")
+        base = max(lic.expiry_date.replace(tzinfo=timezone.utc), datetime.now(timezone.utc))
+        lic.expiry_date = base + timedelta(days=body.extend_days)
+        if lic.status in (LicenseStatus.EXPIRED, LicenseStatus.SUSPENDED):
+            lic.status = LicenseStatus.ACTIVE
+    if body.branch_name is not None:
+        branch = _norm_branch(body.branch_name)
+        if _branch_conflict(db, lic.tenant_id, branch, exclude_id=lic.id):
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                f"Another license of this company already uses branch '{branch or 'main office'}'")
+        lic.branch_name = branch
+    # re-sign so a freshly downloaded .lic shows the new limits (old keys stay valid: same id+secret)
+    lic.signature = lic_svc.build_activation_token(lic, t.company_name if t else "")
+    audit.record(db, action="license_update", tenant_id=lic.tenant_id, actor_id=admin.id,
+                 actor_email=admin.email, target_type="license", target_id=lic.id, old_value=old,
+                 new_value={"max_devices": lic.max_devices, "max_admins": lic.max_admins,
+                            "expiry": lic.expiry_date.isoformat(), "branch": lic.branch_name},
+                 source_ip=client_ip(request))
+    db.commit()
+    lic.status = lic_svc.effective_status(lic)
+    return lic
+
+
+@router.delete("/licenses/{license_id}", dependencies=[Depends(platform_admin)])
+def delete_license(license_id: str, request: Request, db: Session = Depends(get_db),
+                   admin: AdminUser = Depends(platform_admin)):
+    """Remove a license that was never activated (e.g. a duplicate created by mistake).
+    Activated licenses must be revoked instead so the client server is told on its next sync."""
+    lic = db.get(License, license_id)
+    if not lic:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "License not found")
+    if lic.activated:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "This license is activated on a client server. Revoke it instead of removing it.")
+    audit.record(db, action="license_delete", tenant_id=lic.tenant_id, actor_id=admin.id,
+                 actor_email=admin.email, target_type="license", target_id=lic.id,
+                 old_value={"branch": lic.branch_name, "max_devices": lic.max_devices},
+                 source_ip=client_ip(request))
+    db.delete(lic)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/tenants/provision", response_model=ProvisionOut, dependencies=[Depends(platform_admin)])
@@ -252,7 +348,7 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
         expiry_date=datetime.now(timezone.utc) + timedelta(days=term),
         max_devices=body.max_devices, max_admins=body.max_admins,
         is_demo=body.is_demo or body.edition == LicenseEdition.DEMO,
-        features=lic_svc.DEFAULT_FEATURES,
+        features=lic_svc.DEFAULT_FEATURES, branch_name=_norm_branch(body.branch_name),
     )
     db.add(lic)
     db.flush()
@@ -317,9 +413,8 @@ def download_license_key(license_id: str, db: Session = Depends(get_db),
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Cross-tenant access denied")
     tenant = db.get(Tenant, lic.tenant_id)
     data = _license_key_file(tenant, lic)
-    safe = "".join(c for c in tenant.company_name if c.isalnum() or c in " _-").strip() or "license"
     return Response(content=data, media_type="application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="{safe}.lic"'})
+                    headers={"Content-Disposition": f'attachment; filename="{_lic_filename(tenant, lic)}"'})
 
 
 @router.post("/licenses/provision-info")
@@ -356,6 +451,7 @@ def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
         "contact_email": tenant.contact_email,
         "owner_email": owner.email if owner else None,
         "owner_name": owner.full_name if owner else "Account Owner",
+        "branch_name": lic.branch_name,
         # hash only (never plaintext) so the cloud-issued password also works on-prem
         "owner_password_hash": owner.password_hash if owner else None,
         "cred_seq": owner.cred_seq if owner else 0,
@@ -417,6 +513,8 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
         "status": lic_svc.effective_status(lic).value,
         "expiry": lic.expiry_date.isoformat(),
         "max_devices": lic.max_devices,
+        "max_admins": lic.max_admins,
+        "branch_name": lic.branch_name,
         "features": lic.features,
     }
 
@@ -573,6 +671,8 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
         lic.activated = True
         lic.expiry_date = exp
         lic.max_devices = info["max_devices"]
+        lic.max_admins = info.get("max_admins") or lic.max_admins
+    lic.branch_name = info.get("branch_name")
     lic.status = LicenseStatus.ACTIVE
     lic.signature = key
     db.flush()
@@ -608,7 +708,8 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
                  actor_email=user.email, target_type="license", target_id=lic.id,
                  new_value={"via": "online", "server": server}, source_ip=client_ip(request))
     db.commit()
-    return {"ok": True, "company_name": tenant.company_name, "owner_email": owner_email,
+    return {"ok": True, "company_name": tenant.company_name, "branch_name": lic.branch_name,
+            "owner_email": owner_email, "max_devices": lic.max_devices,
             "owner_password": created_pw,
             "password_source": "local" if owner_pw else ("cloud" if cloud_hash else "generated"),
             "message": "License activated. Sign in with the company admin account below."}

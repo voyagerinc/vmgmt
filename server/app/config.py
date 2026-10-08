@@ -35,7 +35,7 @@ if sys.stdout is None or sys.stderr is None:
     if sys.stderr is None:
         sys.stderr = _console_log
 
-DEFAULT_LICENSE_SERVER = "http://vmgmt.voyager.co.in:9084"
+DEFAULT_LICENSE_SERVER = "http://vmgmt.voyager.co.in:8084"
 
 
 def _detect_lan_ip() -> str:
@@ -61,7 +61,18 @@ def _ensure_client_env() -> None:
     license server. Never overwrites an existing .env; skipped on the Linux cloud license
     server and in a source checkout."""
     env_file = BASE_DIR / ".env"
-    if env_file.exists() or os.name != "nt" or (BASE_DIR.parent / ".git").exists():
+    if os.name != "nt" or (BASE_DIR.parent / ".git").exists():
+        return
+    if env_file.exists():
+        # earlier builds wrote the wrong license-server port (9084 is the client's own port)
+        try:
+            txt = env_file.read_text(encoding="utf-8")
+            if "vmgmt.voyager.co.in:9084" in txt:
+                env_file.write_text(txt.replace("vmgmt.voyager.co.in:9084", "vmgmt.voyager.co.in:8084"),
+                                    encoding="utf-8")
+                print(f"[config] Fixed license server port in {env_file} (9084 -> 8084)")
+        except Exception:
+            pass
         return
     ip = _detect_lan_ip()
     try:
@@ -114,7 +125,7 @@ class Settings(BaseSettings):
     evidence_key: str = ""
 
     # --- Licensing (on-prem servers activate against the cloud license server) ---
-    # e.g. http://vmgmt.voyager.co.in:9084 (leave blank on the cloud license server itself)
+    # e.g. http://vmgmt.voyager.co.in:8084 (leave blank on the cloud license server itself)
     license_server: str = ""
 
     def resolve_license_server(self) -> str:

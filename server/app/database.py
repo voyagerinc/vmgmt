@@ -60,6 +60,7 @@ _COLUMN_MIGRATIONS = [
     ("tenants", "client_server_version", "VARCHAR(50)", "NULL"),
     ("tenants", "client_server_updated_at", "DATETIME", "NULL"),
     ("tenants", "last_sync_at", "DATETIME", "NULL"),
+    ("licenses", "branch_name", "VARCHAR(120)", "NULL"),
 ]
 
 

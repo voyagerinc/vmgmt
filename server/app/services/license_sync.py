@@ -66,6 +66,12 @@ def run_client_sync(db: Session) -> dict:
         if info.get("max_devices") and lic.max_devices != info["max_devices"]:
             lic.max_devices = info["max_devices"]
             changed.append("max_devices")
+        if info.get("max_admins") and lic.max_admins != info["max_admins"]:
+            lic.max_admins = info["max_admins"]
+            changed.append("max_admins")
+        if "branch_name" in info and lic.branch_name != info["branch_name"]:
+            lic.branch_name = info["branch_name"]
+            changed.append("branch_name")
         if info.get("features"):
             lic.features = info["features"]
         new_status = info.get("status")

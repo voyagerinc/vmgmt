@@ -31,7 +31,7 @@ LAN / AGENTS
 Edit server\.env and set:
    EMP_HOST=0.0.0.0
    EMP_SERVER_PUBLIC_URL=http://THIS-SERVER-IP:9084
-   EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:9084
+   EMP_LICENSE_SERVER=http://vmgmt.voyager.co.in:8084
 Then run START.bat again (or restart the service via SERVER_CONTROL.bat).
 
 SERVICE CONTROL
