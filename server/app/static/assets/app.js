@@ -186,21 +186,52 @@ async function route(){
   }catch(e){ main.innerHTML=""; main.appendChild(topbar("Error")); main.appendChild(el(`<div class="notice">${esc(e.message)}</div>`)); }
 }
 
+/* .lic file picker: parses the license file and hands {license_id, license_key, company, branch, ...}
+   to onLoad. Returns {node, parse} — parse(text) also accepts a whole .lic pasted as text. */
+function licFilePicker(onLoad){
+  const node=el(`<div>
+    <div class="field"><label>Attach license file (.lic) — fills in License ID and License Key automatically</label>
+      <input type="file" accept=".lic,.json,.txt" /></div>
+    <div class="notice" style="display:none"></div></div>`);
+  const preview=node.querySelector(".notice");
+  const parse=(txt)=>{
+    let d; try{ d=JSON.parse(String(txt).replace(/^﻿/,"")); }catch{ throw new Error("This is not a valid .lic file."); }
+    if(!d.license_id||!d.license_key) throw new Error("The .lic file has no License ID / License Key.");
+    preview.style.display="block";
+    preview.innerHTML=`Company: <b>${esc(d.company||"—")}</b>${d.branch?` · Branch: <b>${esc(d.branch)}</b>`:""}`+
+      ` · Devices: ${esc(d.max_devices??"—")} · Expires: ${d.expiry?esc(fmtDate(d.expiry)):"—"}`;
+    onLoad(d); return d;
+  };
+  node.querySelector("input[type=file]").onchange=(e)=>{
+    const file=e.target.files[0]; if(!file) return;
+    const rd=new FileReader();
+    rd.onload=()=>{ try{ parse(rd.result); toast("License file loaded"); }catch(err){ toast(err.message,true); } };
+    rd.readAsText(file);
+  };
+  return {node, parse};
+}
+const cleanKey=s=>String(s||"").replace(/\s+/g,"").replace(/^["']+|["']+$/g,"");   // line breaks/quotes from copy-paste
+
 VIEWS.activate = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Activate this server"));
   const ls=await api("/api/license/status").catch(()=>({}));
   if(ls.usable){ main.appendChild(el(`<div class="notice">✓ Your license is active (${esc(ls.label||"active")}). <a href="#dashboard">Go to dashboard</a>.</div>`)); return; }
-  main.appendChild(el(`<div class="notice">Your license is <b>${esc(ls.label||"inactive")}</b>. Agents cannot enroll until you attach the license key issued by your provider. Enter the License ID and License Key from your welcome email (or the .lic file).</div>`));
+  main.appendChild(el(`<div class="notice">Your license is <b>${esc(ls.label||"inactive")}</b>. Agents cannot enroll until you attach the license issued by your provider. Attach the <b>.lic file</b> (or enter the License ID and License Key from your welcome email).</div>`));
   const c=el(`<div class="card" style="max-width:560px"></div>`);
   const f=fields([
     {k:"license_id",label:"License ID",value:ls.license_id||""},
     {k:"license_key",label:"License Key",type:"textarea",value:""},
   ]);
+  const ins=f.querySelectorAll("input,textarea");
+  const pick=licFilePicker(d=>{ ins[0].value=d.license_id; ins[1].value=d.license_key; });
+  c.appendChild(pick.node);
   c.appendChild(f);
   const b=el(`<button class="btn">Activate license</button>`);
   b.onclick=async()=>{ try{
     const v=f._values();
-    await api("/api/license/activate-here",{method:"POST",body:{license_id:v.license_id.trim(),license_key:v.license_key.trim()}});
+    if(v.license_key.trim().startsWith("{")) pick.parse(v.license_key);       // whole .lic pasted
+    const w=f._values();
+    await api("/api/license/activate-here",{method:"POST",body:{license_id:cleanKey(w.license_id),license_key:cleanKey(w.license_key)}});
     toast("License activated — this server is live"); location.hash="dashboard";
   }catch(e){ toast(e.message,true); } };
   c.appendChild(b);
@@ -605,7 +636,7 @@ VIEWS.licenses = async (main) => {
   if(isPlatform){
     const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b);
     const dlSrv=el(`<button class="btn sm ghost">⬇ Download Client Server Setup</button>`); dlSrv.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe"); tools.push(dlSrv);
-    const a=el(`<button class="btn sm ghost">Activate from license server</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
+    const a=el(`<button class="btn sm">🔑 Activate with .lic file</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
   }
   main.appendChild(topbar("Licenses & Tenants",tools));
   const tenants=await api("/api/tenants");
@@ -729,40 +760,22 @@ Password : ${esc(r.new_password)}</pre>
 }
 async function activateOnline(main){
   const meta=await api("/api/meta").catch(()=>({}));
-  const wrap=el(`<div>
-    <div class="field"><label>Attach license file (.lic) — fills in License ID and Key automatically</label>
-      <input type="file" accept=".lic,.json,.txt" /></div>
-    <div class="notice" style="display:none"></div></div>`);
   const f=fields([
     {k:"license_server",label:"Cloud license server URL",value:meta.license_server||"http://vmgmt.voyager.co.in:8084"},
     {k:"license_id",label:"License ID"},
     {k:"license_key",label:"License Key",type:"textarea"},
     {k:"owner_password",label:"Company admin password (leave blank = use the password issued on the cloud)",type:"password"},
   ]);
+  const ins=f.querySelectorAll("input,textarea");
+  const pick=licFilePicker(d=>{ ins[1].value=d.license_id; ins[2].value=d.license_key; });
+  const wrap=el(`<div></div>`);
+  wrap.appendChild(pick.node);
   wrap.appendChild(f);
-  const pwInp=f.querySelectorAll("input")[f.querySelectorAll("input").length-1];
-  pwInp.autocomplete="new-password";            // stop the browser auto-filling a saved password
-  const preview=wrap.querySelector(".notice");
-  const applyLic=(txt)=>{
-    let d; try{ d=JSON.parse(txt); }catch{ throw new Error("This is not a valid .lic file."); }
-    if(!d.license_id||!d.license_key) throw new Error("The .lic file has no License ID / License Key.");
-    const ins=f.querySelectorAll("input,textarea");
-    ins[1].value=d.license_id; ins[2].value=d.license_key;
-    preview.style.display="block";
-    preview.innerHTML=`Company: <b>${esc(d.company||"—")}</b>${d.branch?` · Branch: <b>${esc(d.branch)}</b>`:""}`+
-      ` · Devices: ${esc(d.max_devices??"—")} · Expires: ${d.expiry?esc(fmtDate(d.expiry)):"—"}`;
-  };
-  wrap.querySelector("input[type=file]").onchange=(e)=>{
-    const file=e.target.files[0]; if(!file) return;
-    const rd=new FileReader();
-    rd.onload=()=>{ try{ applyLic(String(rd.result).replace(/^﻿/,"")); toast("License file loaded"); }catch(err){ toast(err.message,true); } };
-    rd.readAsText(file);
-  };
+  ins[ins.length-1].autocomplete="new-password";   // stop the browser auto-filling a saved password
   modal("Activate this server from the license server",wrap,async()=>{
     const v=f._values();
-    let key=v.license_key.trim();
-    if(key.startsWith("{")){ applyLic(key); key=f._values().license_key.trim(); }   // whole .lic pasted
-    const lid=f._values().license_id.trim();
+    if(v.license_key.trim().startsWith("{")) pick.parse(v.license_key);       // whole .lic pasted
+    const key=cleanKey(f._values().license_key), lid=cleanKey(f._values().license_id);
     if(!lid||!key) throw new Error("Attach the .lic file, or enter License ID and License Key.");
     const r=await api("/api/license/activate-online",{method:"POST",body:{
       license_server:v.license_server.trim(), license_id:lid,

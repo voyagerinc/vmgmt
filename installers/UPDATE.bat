@@ -29,6 +29,14 @@ if not defined LIC (
   pause & exit /b 1
 )
 set "LIC=%LIC: =%"
+rem --- correct known-wrong addresses from older builds (license server is :8084) ---
+set "LIC0=%LIC%"
+set "LIC=%LIC:vmgmt.voyage.co.in=vmgmt.voyager.co.in%"
+set "LIC=%LIC:vmgmt.voyager.co.in:9084=vmgmt.voyager.co.in:8084%"
+if not "%LIC%"=="%LIC0%" (
+  echo Correcting license server address in server\.env to %LIC%
+  powershell -NoProfile -Command "$f='server\.env'; $t=[IO.File]::ReadAllText($f); $t=$t.Replace('vmgmt.voyage.co.in','vmgmt.voyager.co.in').Replace('vmgmt.voyager.co.in:9084','vmgmt.voyager.co.in:8084'); [IO.File]::WriteAllText($f,$t)"
+)
 echo License server: %LIC%
 
 rem --- detect Python (check server venv, D:\Python, or system python) ---
@@ -44,8 +52,12 @@ echo.
 echo [1/5] Downloading latest bundle ...
 if exist "%TMPZIP%" del /f /q "%TMPZIP%" >nul 2>&1
 powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls; try { (New-Object System.Net.WebClient).DownloadFile('%LIC%/api/updates/download/bundle', '%TMPZIP%') } catch { try { Invoke-WebRequest -UseBasicParsing -Uri '%LIC%/api/updates/download/bundle' -OutFile '%TMPZIP%' } catch { exit 1 } }"
-if not exist "%TMPZIP%" (
+set "ZSIZE=0"
+if exist "%TMPZIP%" for %%F in ("%TMPZIP%") do set "ZSIZE=%%~zF"
+if %ZSIZE% LSS 1000 (
   echo [ERROR] Download failed from %LIC%/api/updates/download/bundle.
+  echo         Check that this server can open %LIC% in a browser.
+  if exist "%TMPZIP%" del /f /q "%TMPZIP%" >nul 2>&1
   pause & exit /b 1
 )
 

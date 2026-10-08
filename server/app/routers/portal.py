@@ -67,6 +67,12 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
     return json.dumps(payload, indent=2).encode()
 
 
+def _clean_key(value) -> str:
+    """License IDs/keys never contain whitespace or quotes; drop any picked up when the key was
+    copied from an email, a wrapped text box or the .lic JSON (line breaks, spaces, quotes)."""
+    return "".join(str(value or "").split()).strip("\"'")
+
+
 def _lic_filename(tenant: Tenant, lic: License) -> str:
     name = tenant.company_name + (f" - {lic.branch_name}" if lic.branch_name else "")
     return ("".join(c for c in name if c.isalnum() or c in " _-").strip() or "license") + ".lic"
@@ -422,8 +428,8 @@ def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
     """Cloud license server: validate a license key and return the company + owner so an
     on-premise Management Server can create the local admin account (PRD §8.3). Public —
     the license key is the proof of authorization."""
-    license_id = (body.get("license_id") or "").strip()
-    key = (body.get("license_key") or "").strip()
+    license_id = _clean_key(body.get("license_id"))
+    key = _clean_key(body.get("license_key"))
     server_id = (body.get("server_id") or "onprem").strip()
     lic = db.get(License, license_id)
     if not lic or not lic_svc.verify_activation(key, lic.id, lic.activation_secret):
@@ -472,8 +478,8 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
     Returns the owner's email, password HASH (never plaintext) and credential version, so a
     cloud-initiated password reset propagates to the on-prem client (PRD §8). Public — the
     license key is the proof of authorization."""
-    license_id = (body.get("license_id") or "").strip()
-    key = (body.get("license_key") or "").strip()
+    license_id = _clean_key(body.get("license_id"))
+    key = _clean_key(body.get("license_key"))
     lic = db.get(License, license_id)
     if not lic or not lic_svc.verify_activation(key, lic.id, lic.activation_secret):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid license id or key")
@@ -585,8 +591,8 @@ def activate_here(body: dict, request: Request, db: Session = Depends(get_db),
     """
     if user.role not in (Role.CUSTOMER_OWNER, Role.PLATFORM_SUPER_ADMIN):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the company owner can activate the license")
-    license_id = (body.get("license_id") or "").strip()
-    license_key = (body.get("license_key") or "").strip()
+    license_id = _clean_key(body.get("license_id"))
+    license_key = _clean_key(body.get("license_key"))
     lic = db.get(License, license_id)
     if not lic:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "License not found")
@@ -619,8 +625,8 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
     import urllib.request
     if user.role != Role.PLATFORM_SUPER_ADMIN:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the local administrator can activate the server")
-    license_id = (body.get("license_id") or "").strip()
-    key = (body.get("license_key") or "").strip()
+    license_id = _clean_key(body.get("license_id"))
+    key = _clean_key(body.get("license_key"))
     owner_pw = (body.get("owner_password") or "").strip()
     server = (body.get("license_server") or settings.license_server or "").strip().rstrip("/")
     if not (license_id and key):
@@ -642,7 +648,16 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
         with urllib.request.urlopen(req, timeout=20) as resp:
             info = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:300]
+        raw = e.read().decode(errors="replace")[:300]
+        try:
+            detail = json.loads(raw).get("detail") or raw
+        except Exception:
+            detail = raw
+        if "Invalid license id or key" in str(detail):
+            detail = ("the License ID and License Key do not match any license on the license server. "
+                      "Download the .lic file again from the license server (Licenses & Tenants -> Licenses "
+                      "-> .lic) and attach it here. If that license was removed or revoked there, use the "
+                      "license that is still listed.")
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"License server rejected activation: {detail}")
     except Exception as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not reach license server {server}: {e}")
