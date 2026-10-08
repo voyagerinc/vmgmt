@@ -223,11 +223,11 @@ function topbar(title, tools){
 
 async function showClientUpdateModal(){
   const body=el(`<div>
-    <p class="muted" style="margin-bottom:12px">Check for server software updates from <b>vmgmt.voyager.co.in</b> (Central License Server).</p>
-    <div id="updStatus" class="notice">Click <b>Check for updates</b> to query vmgmt.voyager.co.in.</div>
+    <p class="muted" style="margin-bottom:12px">Check for server software updates from <b>http://vmgmt.voyager.co.in:8084</b> (Central License Server).</p>
+    <div id="updStatus" class="notice">Click <b>Check for updates</b> to query http://vmgmt.voyager.co.in:8084.</div>
     <div style="display:flex;gap:10px;margin-top:14px;">
       <button class="btn ghost" id="chkBtn">🔍 Check for updates</button>
-      <button class="btn" id="applyBtn" style="display:none;background:#0284c7;color:#fff;">⬆ Update from vmgmt.voyager.co.in</button>
+      <button class="btn" id="applyBtn" style="display:none;background:#0284c7;color:#fff;">⬆ Update from http://vmgmt.voyager.co.in:8084</button>
     </div>
   </div>`);
 
@@ -238,7 +238,7 @@ async function showClientUpdateModal(){
 
   chkBtn.onclick=async()=>{
     statusDiv.className="notice";
-    statusDiv.textContent="Checking vmgmt.voyager.co.in for updates...";
+    statusDiv.textContent="Checking http://vmgmt.voyager.co.in:8084 for updates...";
     try {
       const r=await api("/api/system/check-update");
       if(r.update_available){
@@ -256,9 +256,9 @@ async function showClientUpdateModal(){
   };
 
   applyBtn.onclick=async()=>{
-    if(!confirm("Download update from vmgmt.voyager.co.in and restart the server?")) return;
+    if(!confirm("Download update from http://vmgmt.voyager.co.in:8084 and restart the server?")) return;
     statusDiv.className="notice";
-    statusDiv.textContent="Downloading update from vmgmt.voyager.co.in and applying... Please wait ~20 seconds.";
+    statusDiv.textContent="Downloading update from http://vmgmt.voyager.co.in:8084 and applying... Please wait ~20 seconds.";
     try {
       const r=await api("/api/system/apply-update", {method:"POST"});
       statusDiv.className = r.ok ? "notice b-ok" : "notice b-err";

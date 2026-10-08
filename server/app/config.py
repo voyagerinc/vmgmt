@@ -55,24 +55,31 @@ def _detect_lan_ip() -> str:
             return "127.0.0.1"
 
 
+def _fix_env_urls() -> None:
+    """Correct known-wrong license-server addresses in an existing .env (all servers, including
+    the cloud): the misspelled domain vmgmt.voyage.co.in and the client port 9084 that earlier
+    builds wrote as the license-server port. The license server is http://vmgmt.voyager.co.in:8084."""
+    env_file = BASE_DIR / ".env"
+    if not env_file.exists():
+        return
+    try:
+        txt = env_file.read_text(encoding="utf-8")
+        new = txt.replace("vmgmt.voyage.co.in", "vmgmt.voyager.co.in")
+        new = new.replace("vmgmt.voyager.co.in:9084", "vmgmt.voyager.co.in:8084")
+        if new != txt:
+            env_file.write_text(new, encoding="utf-8")
+            print(f"[config] Corrected license server address in {env_file} -> {DEFAULT_LICENSE_SERVER}")
+    except Exception:
+        pass
+
+
 def _ensure_client_env() -> None:
     """On-premise client servers (Windows installs): create server/.env on first start so the
     server listens on the LAN, agents get a reachable URL and activation/UPDATE.bat know the
     license server. Never overwrites an existing .env; skipped on the Linux cloud license
     server and in a source checkout."""
     env_file = BASE_DIR / ".env"
-    if os.name != "nt" or (BASE_DIR.parent / ".git").exists():
-        return
-    if env_file.exists():
-        # earlier builds wrote the wrong license-server port (9084 is the client's own port)
-        try:
-            txt = env_file.read_text(encoding="utf-8")
-            if "vmgmt.voyager.co.in:9084" in txt:
-                env_file.write_text(txt.replace("vmgmt.voyager.co.in:9084", "vmgmt.voyager.co.in:8084"),
-                                    encoding="utf-8")
-                print(f"[config] Fixed license server port in {env_file} (9084 -> 8084)")
-        except Exception:
-            pass
+    if env_file.exists() or os.name != "nt" or (BASE_DIR.parent / ".git").exists():
         return
     ip = _detect_lan_ip()
     try:
@@ -90,6 +97,7 @@ def _ensure_client_env() -> None:
         print(f"[config] Could not create {env_file}: {e}")
 
 
+_fix_env_urls()
 _ensure_client_env()
 
 

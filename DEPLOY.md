@@ -1,14 +1,19 @@
-# Cloud Deployment — vmgmt.voyage.co.in
+# Cloud Deployment — License Server `http://vmgmt.voyager.co.in:8084/`
 
-Deploy the Voyager Endpoint Management Server on a Linux VPS behind Nginx with HTTPS.
+Deploy the Voyager Endpoint Management **license server** on a Linux VPS.
 
 ```
-Agents / Browsers ──HTTPS:443──▶ Nginx (TLS) ──HTTP──▶ 127.0.0.1:9084 (app) ──▶ SQLite/Postgres
-                   vmgmt.voyage.co.in
+Client servers / Agents / Browsers ──HTTP:8084──▶ vmgmt.voyager.co.in:8084 (app) ──▶ SQLite/Postgres
 ```
 
-The app listens only on localhost; Nginx terminates TLS and reverse-proxies to it. Agents and
-license keys embed `https://vmgmt.voyage.co.in`, so every endpoint connects over the domain.
+| Server | Address | Port |
+|---|---|---|
+| Cloud license server | `http://vmgmt.voyager.co.in:8084/` | 8084 |
+| On-premise client server | `http://<client LAN IP>:9084/` | 9084 |
+
+License files (`.lic`), customer emails and agents embed `EMP_SERVER_PUBLIC_URL`, so it must be
+exactly `http://vmgmt.voyager.co.in:8084`. Client servers reach the license server at the same URL
+(`EMP_LICENSE_SERVER` in their `server\.env`, created automatically).
 
 ---
 
@@ -17,17 +22,17 @@ Create an **A record** pointing the host to your VPS public IP:
 
 | Type | Name            | Value (VPS IP)   | TTL  |
 |------|-----------------|------------------|------|
-| A    | vmgmt.voyage    | `203.0.113.45`   | 300  |
+| A    | vmgmt           | `203.0.113.45`   | 300  |
 
-(Full host `vmgmt.voyage.co.in`.) Verify it resolves before continuing:
+(Full host `vmgmt.voyager.co.in`.) Verify it resolves before continuing:
 ```bash
-dig +short vmgmt.voyage.co.in      # should print your VPS IP
+dig +short vmgmt.voyager.co.in      # should print your VPS IP
 ```
 
 ## 2. System packages
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx git
+sudo apt install -y python3 python3-venv python3-pip git
 ```
 
 ## 3. Get the code & install
@@ -43,8 +48,10 @@ pip install -r requirements.txt
 ## 4. Configure (.env)
 ```bash
 cp ../deploy/env.production.example .env
-# edit .env — the important line:
-#   EMP_SERVER_PUBLIC_URL=https://vmgmt.voyage.co.in
+# the important lines (already set in the example):
+#   EMP_HOST=0.0.0.0
+#   EMP_PORT=8084
+#   EMP_SERVER_PUBLIC_URL=http://vmgmt.voyager.co.in:8084
 nano .env
 ```
 Do a one-off first run to create the DB + admin, then stop it (Ctrl-C):
@@ -60,46 +67,43 @@ sudo cp /root/projects/vmgmt/deploy/vmgmt.service /etc/systemd/system/vmgmt.serv
 sudo systemctl daemon-reload
 sudo systemctl enable --now vmgmt
 sudo systemctl status vmgmt            # should be active (running)
-curl -s http://127.0.0.1:9084/api/health   # {"status":"ok",...}
+curl -s http://127.0.0.1:8084/api/health   # {"status":"ok",...}
 ```
 
-## 6. Nginx reverse proxy
+## 6. Firewall
+Open port 8084 so client servers and agents can reach the license server.
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 8084/tcp
+sudo ufw enable
+```
+Verify from outside the VPS:
+```bash
+curl -s http://vmgmt.voyager.co.in:8084/api/meta   # "server_url":"http://vmgmt.voyager.co.in:8084"
+```
+
+## 7. Done — first login
+Open **http://vmgmt.voyager.co.in:8084/**, sign in as the Super Admin from `FIRST_RUN.txt`, then:
+1. Settings → **Email setup** (SMTP) so license/recovery mails deliver.
+2. **Licenses & Tenants → + Customer** to provision a company (creates admin + license, emails the `.lic`).
+3. On the customer's client server: **Licenses & Tenants → Activate from license server**, attach the
+   `.lic` file and activate.
+
+---
+
+## Optional: HTTPS on 443 with Nginx
+If you later want `https://vmgmt.voyager.co.in/`, install `nginx certbot python3-certbot-nginx`, then:
 ```bash
 sudo cp /root/projects/vmgmt/deploy/nginx-vmgmt.conf /etc/nginx/sites-available/vmgmt
 sudo ln -s /etc/nginx/sites-available/vmgmt /etc/nginx/sites-enabled/vmgmt
 sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d vmgmt.voyager.co.in --redirect -m you@voyager.co.in --agree-tos
 ```
-
-## 7. HTTPS (Let's Encrypt)
-```bash
-sudo certbot --nginx -d vmgmt.voyage.co.in --redirect -m you@voyager.co.in --agree-tos
-```
-Certbot rewrites the Nginx site to add the 443 server + HTTP→HTTPS redirect and installs a
-renewal timer. Verify:
-```bash
-curl -s https://vmgmt.voyage.co.in/api/health
-```
-
-## 8. Firewall
-Expose only 80/443; keep 9084 private (it is bound to localhost anyway).
-```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'      # opens 80 + 443
-sudo ufw enable
-```
-
-## 9. Done — first login
-Open **https://vmgmt.voyage.co.in/**, sign in as the Super Admin from `FIRST_RUN.txt`, then:
-1. Settings → **Email setup** (SMTP) so license/recovery mails deliver.
-2. **Licenses & Tenants → + Customer** to provision a company (creates admin + license key, emails it).
-3. The company owner signs in, **activates the license**, then **Downloads** the agent.
-
-Because `EMP_SERVER_PUBLIC_URL=https://vmgmt.voyage.co.in`, every downloaded agent and license
-key already points at the domain over HTTPS — nothing else to change on endpoints.
-
----
+Keep port 8084 open as well — existing client servers and `.lic` files use
+`http://vmgmt.voyager.co.in:8084`.
 
 ## Updating later
+From the console: **Settings → Update from GitHub & restart**, or:
 ```bash
 cd /root/projects/vmgmt && git pull
 cd server && source .venv/bin/activate && pip install -r requirements.txt
@@ -115,4 +119,4 @@ sudo systemctl restart vmgmt
 - **Backups:** back up `server/data/` (SQLite DB, evidence, keys `.secret`/`.evidence_key`) or your
   Postgres dumps + `server/data/evidence/`. Losing `.secret`/`.evidence_key` invalidates tokens and
   encrypted evidence.
-- **Logs:** `journalctl -u vmgmt -f` for the app; `/var/log/nginx/` for Nginx.
+- **Logs:** `journalctl -u vmgmt -f`.

@@ -217,7 +217,7 @@ def pull_and_restart(body: dict | None = None, request: Request = None,
 # --------------------------------------------------------------- CLIENT SERVER: check & apply
 @router.get("/system/check-update")
 def check_update(admin: AdminUser = Depends(_UPD)):
-    """Client server: ask the license server (vmgmt.voyager.co.in) whether a newer build exists."""
+    """Client server: ask the license server (http://vmgmt.voyager.co.in:8084) whether a newer build exists."""
     server = settings.resolve_license_server()
     if _is_license_server() and not settings.license_server:
         return {"role": "license_server", "current": __version__, "update_available": False,
@@ -241,7 +241,7 @@ def check_update(admin: AdminUser = Depends(_UPD)):
 @router.post("/system/apply-update")
 def apply_update(request: Request = None, db: Session = Depends(get_db),
                  admin: AdminUser = Depends(_UPD)):
-    """Client server self-update from the license server (vmgmt.voyager.co.in)."""
+    """Client server self-update from the license server (http://vmgmt.voyager.co.in:8084)."""
     if not settings.allow_self_update:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Self-update is disabled on this server")
     if _is_license_server() and not settings.license_server:
