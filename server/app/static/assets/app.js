@@ -173,7 +173,7 @@ async function route(){
   const k=(location.hash.replace("#","")||"dashboard").split("/")[0];
   setActive(k);
   const main=document.getElementById("main"); if(!main){ renderShell(); return; }
-  const need = S.role==="platform_super_admin" && !S.activeTenant && !["dashboard","licenses","audit","settings"].includes(k);
+  const need = S.role==="platform_super_admin" && !S.activeTenant && !["dashboard","licenses","audit","settings","downloads"].includes(k);
   try{
     // License activation gate for company users (PRD §8: inactive until attached to a server).
     if(S.role!=="platform_super_admin" && !["activate","settings"].includes(k)){
@@ -620,9 +620,14 @@ VIEWS.downloads = async (main) => {
 
   const a=el(`<div class="card"><h3 style="margin:0 0 8px">2 · Pre-Configured Endpoint Client (Agent)</h3>
     <p class="muted">Standalone <b>VoyagerAgent.exe</b> package. Dynamically generated from this Client Server — pre-configured with server URL, tenant ID, license, and enrollment token.</p></div>`);
-  const ab=el(`<button class="btn">⬇ Generate & Download VoyagerAgent.zip</button>`);
-  ab.onclick=async()=>{ try{ await downloadWithAuth("/api/download/agent", "VoyagerAgent.zip"); }catch(e){ toast(e.message,true); } };
-  a.appendChild(ab);
+  if(S.role==="platform_super_admin"){
+    // agent packages are company-specific: the company owner downloads them on its client server
+    a.appendChild(el(`<div class="notice">Agent packages are generated on each customer's <b>client server</b> (company owner → Downloads). Upload <b>VoyagerAgent.exe</b> once in <a href="#settings">Settings → Agent program</a>; client servers fetch it from here automatically.</div>`));
+  } else {
+    const ab=el(`<button class="btn">⬇ Generate & Download VoyagerAgent.zip</button>`);
+    ab.onclick=async()=>{ try{ await downloadWithAuth("/api/download/agent", "VoyagerAgent.zip"); }catch(e){ toast(e.message,true); } };
+    a.appendChild(ab);
+  }
   a.appendChild(el(`<p class="muted" style="margin-top:10px">Extract on employee PC → <b>double-click VoyagerAgent.exe</b>. Auto-enrolls with no typing required. Starts in background and auto-launches at logon.</p>`));
   grid.appendChild(a);
 
