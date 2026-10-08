@@ -42,25 +42,50 @@ def _safe(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in " _-").strip() or "download"
 
 
+def _sha256(path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _fetch_agent_exe() -> bool:
-    """Client server: the Universal zip ships without VoyagerAgent.exe, so download it once from
-    the license server (/api/updates/download/agent) and cache it in agent_dist/."""
-    if AGENT_EXE.exists() or not settings.license_server:
+    """Client server: keep agent_dist/VoyagerAgent.exe identical to the license server's copy.
+    The Universal zip ships without it, and a newer agent uploaded to the license server must
+    reach every client — so compare checksums and download only when it differs. If the license
+    server is unreachable the cached copy is used."""
+    if not settings.license_server:
         return AGENT_EXE.exists()
+    import json as _json
     import urllib.request
+    srv = settings.resolve_license_server()
+    try:
+        with urllib.request.urlopen(f"{srv}/api/updates/agent-info", timeout=10) as resp:
+            info = _json.loads(resp.read().decode())
+    except Exception:
+        info = None                                   # offline / older license server
+    if AGENT_EXE.exists():
+        if not info or not info.get("available") or info.get("sha256") == _sha256(AGENT_EXE):
+            return True
+    elif info is not None and not info.get("available"):
+        return False
     tmp = AGENT_EXE.with_suffix(".part")
     try:
         AGENT_EXE.parent.mkdir(parents=True, exist_ok=True)
-        url = f"{settings.resolve_license_server()}/api/updates/download/agent"
-        with urllib.request.urlopen(url, timeout=180) as resp, open(tmp, "wb") as out:
+        with urllib.request.urlopen(f"{srv}/api/updates/download/agent", timeout=180) as resp, \
+                open(tmp, "wb") as out:
             while True:
                 chunk = resp.read(1 << 20)
                 if not chunk:
                     break
                 out.write(chunk)
-        if tmp.stat().st_size < 1_000_000:          # not a real exe (error page / empty)
+        bad = tmp.stat().st_size < 1_000_000 or (info and info.get("sha256")
+                                                 and _sha256(tmp) != info["sha256"])
+        if bad:                                       # error page / truncated download
             tmp.unlink(missing_ok=True)
-            return False
+            return AGENT_EXE.exists()
         tmp.replace(AGENT_EXE)
         return True
     except Exception:
@@ -68,7 +93,7 @@ def _fetch_agent_exe() -> bool:
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
-        return False
+        return AGENT_EXE.exists()
 
 
 @router.get("/agent")
@@ -103,28 +128,19 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
         "license_id": lic.id, "enroll_token": tok.token,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("VoyagerAgent/agent_config.json", json.dumps(config, indent=2))
-        # Standalone .exe build: Python + all dependencies are bundled inside. Nothing to
-        # install on the employee PC — double-click the .exe and it self-enrolls + auto-starts.
-        z.write(AGENT_EXE, "VoyagerAgent/VoyagerAgent.exe")
-        z.writestr("VoyagerAgent/README.txt",
-                   f"Voyager Endpoint Agent - {tenant.company_name}\n"
-                   f"Server : {config['server']}\nLicense: {lic.id}\n\n"
-                   "TO DEPLOY ON AN EMPLOYEE PC:\n"
-                   "  1. Copy this whole 'VoyagerAgent' folder to the PC.\n"
-                   "  2. Double-click VoyagerAgent.exe.\n\n"
-                   "No Python or other software is required - everything is bundled in the .exe.\n"
-                   "It enrolls automatically (reads agent_config.json), starts in the background,\n"
-                   "and re-launches at every logon. Keep the .exe and agent_config.json together.\n")
+    # One self-contained file: the standalone agent with this company's config appended
+    # (the agent reads it from the end of its own .exe). Download -> double-click -> done.
+    import base64
+    trailer = (b"\r\nVOYAGER_AGENT_CONFIG:" + base64.b64encode(json.dumps(config).encode())
+               + b":END_VOYAGER_AGENT_CONFIG\r\n")
+    data = AGENT_EXE.read_bytes() + trailer
     audit.record(db, action="download_agent", tenant_id=tid, actor_id=user.id,
                  actor_email=user.email, target_type="tenant", target_id=tid,
-                 new_value={"format": "exe"})
+                 new_value={"format": "exe-embedded-config"})
     db.commit()
-    data = buf.getvalue()
-    return Response(content=data, media_type="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="{_safe(tenant.company_name)}_VoyagerAgent.zip"'})
+    fname = f"VoyagerAgent_{_safe(tenant.company_name).replace(' ', '_')}.exe"
+    return Response(content=data, media_type="application/vnd.microsoft.portable-executable",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.get("/server-bundle")

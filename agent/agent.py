@@ -21,17 +21,22 @@ import requests
 
 import collectors
 
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 STATE_DIR = Path(os.environ.get("PROGRAMDATA", str(Path.home()))) / "EndpointAgent"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = STATE_DIR / "agent_state.json"
 LOG_FILE = STATE_DIR / "agent.log"
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(LOG_FILE, encoding="utf-8")],
-)
+_handlers: list[logging.Handler] = []
+if sys.stderr is not None:                  # windowed .exe has no console
+    _handlers.append(logging.StreamHandler())
+try:
+    _handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+except OSError:                             # e.g. log created by another account without access
+    pass
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    handlers=_handlers or [logging.NullHandler()])
 log = logging.getLogger("agent")
 
 
@@ -299,13 +304,40 @@ def _config_search_paths():
     return paths
 
 
-def load_bundled_config() -> dict:
-    """Load a generated agent_config.json (server/license/enroll_token) if present.
+_CFG_BEGIN = b"VOYAGER_AGENT_CONFIG:"
+_CFG_END = b":END_VOYAGER_AGENT_CONFIG"
 
-    For the packaged .exe it is read from the folder the .exe runs in; for the source
-    package, next to agent.py. Lets the agent self-enroll with no typing (PRD §7.2).
+
+def load_embedded_config() -> dict:
+    """Config the Management Server appended to this .exe when it was downloaded
+    (base64 JSON between markers at the end of the file), so one file is all a PC needs."""
+    if not FROZEN:
+        return {}
+    import base64
+    try:
+        with open(sys.executable, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read()
+        start = tail.rfind(_CFG_BEGIN)
+        if start < 0:
+            return {}
+        body = tail[start + len(_CFG_BEGIN):]
+        return json.loads(base64.b64decode(body[:body.index(_CFG_END)]))
+    except Exception:
+        return {}
+
+
+def load_bundled_config() -> dict:
+    """Load the server/license/enroll_token config: embedded in the .exe (preferred), else a
+    generated agent_config.json next to the .exe / agent.py. Lets the agent self-enroll with
+    no typing (PRD §7.2).
     """
     import json
+    embedded = load_embedded_config()
+    if embedded.get("server"):
+        return embedded
     for candidate in _config_search_paths():
         try:
             if candidate.exists():
@@ -315,35 +347,105 @@ def load_bundled_config() -> dict:
     return {}
 
 
-def _install_autostart() -> None:
-    """Install the packaged agent for auto-start at logon (no admin required).
+MACHINE_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "VoyagerAgent"
+USER_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoyagerAgent"
+AUTOSTART_NAME = "VoyagerEndpointAgent"
+_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_mutex = None
 
-    Copies the .exe + its config into %LOCALAPPDATA%\\VoyagerAgent and registers a
-    Scheduled Task that runs it hidden at every logon. Safe to call repeatedly.
+
+def _is_admin() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _is_installed_copy() -> bool:
+    """True when running from the install folder (autostart), False when double-clicked
+    from wherever it was downloaded (installer mode)."""
+    here = str(Path(sys.executable).resolve().parent).lower()
+    return here in (str(MACHINE_DIR).lower(), str(USER_DIR).lower())
+
+
+def _relaunch_elevated() -> bool:
+    """Ask Windows (UAC) to run this .exe as administrator; True if the elevated copy started."""
+    try:
+        import ctypes
+        import subprocess
+        params = subprocess.list2cmdline(sys.argv[1:])
+        return ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1) > 32
+    except Exception:
+        return False
+
+
+def _single_instance() -> bool:
+    """One agent per logon session (named mutex); False if another one is already running."""
+    global _mutex
+    try:
+        import ctypes
+        _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\VoyagerEndpointAgent")
+        return ctypes.windll.kernel32.GetLastError() != 183      # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True
+
+
+def _stop_running_copies(dest_exe: Path) -> None:
+    """Stop an already-installed agent so its .exe can be replaced (re-install / update)."""
+    try:
+        import psutil
+        target = str(dest_exe).lower()
+        procs = []
+        for p in psutil.process_iter(["pid", "exe"]):
+            if p.info["pid"] != os.getpid() and (p.info.get("exe") or "").lower() == target:
+                p.terminate()
+                procs.append(p)
+        psutil.wait_procs(procs, timeout=5)
+    except Exception as e:
+        log.warning("Could not stop running agent: %s", e)
+
+
+def _install(machine_wide: bool) -> Path:
+    """Copy this .exe (it carries its own config) to the install folder and register autostart.
+
+    machine_wide (run as administrator): C:\\Program Files\\VoyagerAgent, started for EVERY user
+    at logon (HKLM Run), state folder writable by all users, outbound firewall rule.
+    Otherwise: %LOCALAPPDATA%\\VoyagerAgent + a per-user logon task (no admin needed).
     """
-    if not FROZEN or os.name != "nt":
-        return
     import shutil
     import subprocess
-    try:
-        dest_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoyagerAgent"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        exe = Path(sys.executable).resolve()
-        dest_exe = dest_dir / "VoyagerAgent.exe"
-        if exe != dest_exe.resolve():
-            shutil.copy2(exe, dest_exe)
-            cfg = exe.parent / "agent_config.json"
-            if cfg.exists():
-                shutil.copy2(cfg, dest_dir / "agent_config.json")
-        subprocess.run(
-            ["schtasks", "/create", "/tn", "VoyagerEndpointAgent",
-             "/tr", f'"{dest_exe}"', "/sc", "onlogon", "/rl", "limited", "/f"],
-            capture_output=True, text=True,
-        )
-        log.info("Auto-start installed: %s", dest_exe)
+    dest_dir = MACHINE_DIR if machine_wide else USER_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_exe = dest_dir / "VoyagerAgent.exe"
+    if Path(sys.executable).resolve() != dest_exe.resolve():
+        _stop_running_copies(dest_exe)
+        shutil.copy2(sys.executable, dest_exe)
+    if machine_wide:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, _RUN_KEY, 0,
+                                winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+            winreg.SetValueEx(k, AUTOSTART_NAME, 0, winreg.REG_SZ, f'"{dest_exe}"')
+        # a per-user task from an earlier install would start a second copy
+        subprocess.run(["schtasks", "/delete", "/tn", AUTOSTART_NAME, "/f"], capture_output=True)
+        # employees (standard users) must be able to update the shared agent state/log
+        subprocess.run(["icacls", str(STATE_DIR), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/C", "/Q"],
+                       capture_output=True)
         _add_firewall_rule(dest_exe)
+    else:
+        subprocess.run(["schtasks", "/create", "/tn", AUTOSTART_NAME, "/tr", f'"{dest_exe}"',
+                        "/sc", "onlogon", "/rl", "limited", "/f"], capture_output=True)
+    log.info("Installed %s (%s)", dest_exe, "all users" if machine_wide else "current user")
+    return dest_exe
+
+
+def _start_installed(dest_exe: Path) -> None:
+    import subprocess
+    try:
+        subprocess.Popen([str(dest_exe)], close_fds=True,
+                         creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | NEW_PROCESS_GROUP
     except Exception as e:
-        log.warning("Auto-start install skipped: %s", e)
+        log.warning("Could not start installed agent: %s", e)
 
 
 def _add_firewall_rule(exe: Path) -> None:
@@ -356,6 +458,8 @@ def _add_firewall_rule(exe: Path) -> None:
         return
     import subprocess
     try:
+        subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule",
+                        "name=Voyager Endpoint Agent"], capture_output=True, text=True)
         subprocess.run(
             ["netsh", "advfirewall", "firewall", "add", "rule",
              "name=Voyager Endpoint Agent", "dir=out", "action=allow",
@@ -367,11 +471,37 @@ def _add_firewall_rule(exe: Path) -> None:
         log.warning("Firewall rule skipped (needs admin): %s", e)
 
 
+def _enroll_if_needed(agent: "Agent", args) -> bool:
+    """Enroll (or re-enroll when the .exe points at a different server). Shows a popup on failure."""
+    if agent.enrolled and (agent.state.get("server") or "").rstrip("/") != args.server.rstrip("/"):
+        log.info("Server changed (%s -> %s): re-enrolling", agent.state.get("server"), args.server)
+        agent.state.pop("device_id", None)
+        agent.state.pop("device_cert", None)
+    if agent.enrolled:
+        return True
+    if not (args.license and args.token):
+        log.error("Not enrolled. Provide --license and --token (or a bundled agent_config.json).")
+        if FROZEN:
+            _show_message("This VoyagerAgent.exe has no company settings.\n"
+                          "Download the agent again from your Management Server "
+                          "(Downloads -> Download VoyagerAgent.exe) and run that file.")
+        return False
+    if agent.enroll(args.license, args.token):
+        return True
+    if FROZEN:
+        status = STATE_DIR / "status.txt"
+        label = status.read_text(encoding="utf-8").strip() if status.exists() else "Enrollment failed"
+        _show_message(f"Could not connect this computer to {args.server}.\nStatus: {label}\n\n"
+                      "Check that this PC can open that address in a browser and that the "
+                      "company license is active, then run VoyagerAgent.exe again.")
+    return False
+
+
 def main() -> int:
     cfg = load_bundled_config()
     ap = argparse.ArgumentParser(description="Endpoint Management Agent")
     ap.add_argument("--server", default=cfg.get("server"),
-                    help="Management Server URL (defaults to bundled agent_config.json)")
+                    help="Management Server URL (defaults to the config embedded in the .exe)")
     ap.add_argument("--license", default=cfg.get("license_id"),
                     help="Customer License ID (first enrollment only)")
     ap.add_argument("--token", default=cfg.get("enroll_token"),
@@ -381,35 +511,49 @@ def main() -> int:
 
     if not args.server:
         log.error("No server URL. Provide --server or a bundled agent_config.json.")
+        if FROZEN:
+            _show_message("This VoyagerAgent.exe has no company settings.\n"
+                          "Download the agent again from your Management Server and run that file.")
         return 2
 
+    windows_exe = FROZEN and os.name == "nt"
+
+    # ---- installer mode: the downloaded .exe was double-clicked ----
+    if windows_exe and not _is_installed_copy():
+        machine_wide = _is_admin()
+        if not machine_wide and _relaunch_elevated():
+            return 0                                  # the elevated copy does the install
+        agent = Agent(args.server)
+        if args.reenroll:
+            agent.state.pop("device_id", None)
+            agent.state.pop("device_cert", None)
+        if not _enroll_if_needed(agent, args):
+            return 3
+        try:
+            dest = _install(machine_wide)
+        except Exception as e:
+            log.error("Install failed: %s", e)
+            _show_message(f"The agent is enrolled but could not be installed:\n{e}")
+            return 4
+        _start_installed(dest)
+        company = cfg.get("company") or "your company"
+        _show_message(f"Voyager Endpoint Agent is installed for {company}.\n\n"
+                      f"Server: {args.server}\nInstalled to: {dest.parent}\n\n"
+                      + ("It runs in the background and starts automatically for every user "
+                         "at logon." if machine_wide else
+                         "It runs in the background and starts automatically at your logon.\n"
+                         "(Run it as administrator to install it for all users.)"))
+        return 0
+
+    # ---- run mode: installed copy at logon (or the source agent) ----
+    if windows_exe and not _single_instance():
+        return 0                                      # already running in this session
     agent = Agent(args.server)
     if args.reenroll:
         agent.state.pop("device_id", None)
         agent.state.pop("device_cert", None)
-
-    if not agent.enrolled:
-        if not (args.license and args.token):
-            log.error("Not enrolled. Provide --license and --token (or a bundled agent_config.json).")
-            if FROZEN:
-                _show_message("Setup incomplete: agent_config.json is missing or invalid.\n"
-                              "Keep VoyagerAgent.exe and agent_config.json together in the same folder.")
-            return 2
-        enrolled = agent.enroll(args.license, args.token)
-        if not enrolled:
-            if FROZEN:
-                status = (STATE_DIR / "status.txt")
-                label = status.read_text(encoding="utf-8").strip() if status.exists() else "Enrollment failed"
-                _show_message(f"Could not enroll this computer.\nStatus: {label}\n"
-                              "Check that the server is reachable and the license is active.")
-            return 3
-        if FROZEN:
-            _install_autostart()
-            _show_message("This computer has been enrolled and the agent is now running in the "
-                          "background. It will start automatically at every logon.")
-    elif FROZEN:
-        _install_autostart()
-
+    if not _enroll_if_needed(agent, args):
+        return 3
     agent.run()
     return 0
 

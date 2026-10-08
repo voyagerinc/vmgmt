@@ -6,7 +6,12 @@ Produces onedir bundles under installers/dist/ which the Inno Setup scripts
 Usage (from a Windows build machine with the venvs created):
     python installers/build.py server
     python installers/build.py agent
+    python installers/build.py voyageragent   # single-file VoyagerAgent.exe -> server/agent_dist/
     python installers/build.py all
+
+VoyagerAgent.exe is what client servers hand out: the server appends each company's config to
+it at download time, so one file installs + auto-configures the agent. Build it with the agent
+venv:  agent\.venv\Scripts\python installersuild.py voyageragent
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ WORK = Path(__file__).resolve().parent / "build"
 
 
 def _run(cmd: list[str]) -> None:
-    print("＄", " ".join(cmd))
+    print("$", " ".join(cmd))
     subprocess.check_call(cmd)
 
 
@@ -61,6 +66,27 @@ def build_agent() -> None:
     print("Agent bundles ->", DIST / "AgentEnroll", DIST / "AgentService")
 
 
+def build_voyager_agent() -> None:
+    """Single-file, windowed (no console) agent: everything bundled, no Python on the PC."""
+    agent = ROOT / "agent"
+    out = ROOT / "server" / "agent_dist"
+    _run([
+        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+        "--name", "VoyagerAgent",
+        "--distpath", str(out), "--workpath", str(WORK / "voyageragent"), "--specpath", str(WORK),
+        "--paths", str(agent),
+        "--hidden-import", "mss", "--collect-submodules", "mss",
+        "--hidden-import", "PIL", "--hidden-import", "PIL.Image", "--hidden-import", "psutil",
+        "--hidden-import", "win32gui", "--hidden-import", "win32process",
+        str(agent / "agent.py"),
+    ])
+    import json
+    import re
+    ver = re.search(r'__version__ = "([^"]+)"', (agent / "agent.py").read_text(encoding="utf-8")).group(1)
+    (out / "version.json").write_text(json.dumps({"agent": ver}), encoding="utf-8")
+    print("VoyagerAgent.exe ->", out / "VoyagerAgent.exe", f"(agent {ver})")
+
+
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "all"
     DIST.mkdir(parents=True, exist_ok=True)
@@ -68,3 +94,5 @@ if __name__ == "__main__":
         build_server()
     if target in ("agent", "all"):
         build_agent()
+    if target in ("voyageragent", "all"):
+        build_voyager_agent()

@@ -188,6 +188,15 @@ def updates_download(component: str):
                     headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
 
 
+@router.get("/updates/agent-info")
+def updates_agent_info():
+    """License server: checksum of the staged VoyagerAgent.exe so client servers can tell
+    whether their cached copy is current (cheap; no download)."""
+    if not AGENT_EXE.exists():
+        return {"available": False}
+    return {"available": True, "sha256": _sha256(AGENT_EXE), "size": AGENT_EXE.stat().st_size}
+
+
 @router.post("/system/agent-exe")
 async def upload_agent_exe(request: Request, file: UploadFile = File(...),
                            db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
