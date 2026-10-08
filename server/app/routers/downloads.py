@@ -42,6 +42,35 @@ def _safe(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in " _-").strip() or "download"
 
 
+def _fetch_agent_exe() -> bool:
+    """Client server: the Universal zip ships without VoyagerAgent.exe, so download it once from
+    the license server (/api/updates/download/agent) and cache it in agent_dist/."""
+    if AGENT_EXE.exists() or not settings.license_server:
+        return AGENT_EXE.exists()
+    import urllib.request
+    tmp = AGENT_EXE.with_suffix(".part")
+    try:
+        AGENT_EXE.parent.mkdir(parents=True, exist_ok=True)
+        url = f"{settings.resolve_license_server()}/api/updates/download/agent"
+        with urllib.request.urlopen(url, timeout=180) as resp, open(tmp, "wb") as out:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+        if tmp.stat().st_size < 1_000_000:          # not a real exe (error page / empty)
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(AGENT_EXE)
+        return True
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
 @router.get("/agent")
 def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(get_db),
                    user: AdminUser = Depends(require_roles(Role.IT_ADMIN, Role.CUSTOMER_OWNER))):
@@ -52,6 +81,14 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
     if not lic_svc.is_usable(lic):
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED,
                             "License is not active. Activate the license on this server first.")
+
+    # Only the standalone .exe is offered (no Python needed on employee PCs). A client server
+    # installed from the Universal zip fetches it once from the license server.
+    if not _fetch_agent_exe():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            "VoyagerAgent.exe is not available on this server yet. Platform Super Admin: "
+                            "Settings -> Agent program -> upload VoyagerAgent.exe (on this server or on the "
+                            "license server), then download the agent again.")
 
     # fresh long-lived enrollment token for this download
     tok = EnrollmentToken(tenant_id=tid, label="agent-download", max_uses=0,
@@ -69,33 +106,21 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("VoyagerAgent/agent_config.json", json.dumps(config, indent=2))
-        if AGENT_EXE.exists():
-            # Standalone .exe build: Python + all dependencies are bundled inside. Nothing to
-            # install on the employee PC — double-click the .exe and it self-enrolls + auto-starts.
-            z.write(AGENT_EXE, "VoyagerAgent/VoyagerAgent.exe")
-            z.writestr("VoyagerAgent/README.txt",
-                       f"Voyager Endpoint Agent - {tenant.company_name}\n"
-                       f"Server : {config['server']}\nLicense: {lic.id}\n\n"
-                       "TO DEPLOY ON AN EMPLOYEE PC:\n"
-                       "  1. Copy this whole 'VoyagerAgent' folder to the PC.\n"
-                       "  2. Double-click VoyagerAgent.exe.\n\n"
-                       "No Python or other software is required - everything is bundled in the .exe.\n"
-                       "It enrolls automatically (reads agent_config.json), starts in the background,\n"
-                       "and re-launches at every logon. Keep the .exe and agent_config.json together.\n")
-        else:
-            # Fallback (no prebuilt exe on this server): source package with a .bat runner.
-            for fname in ("agent.py", "collectors.py", "requirements.txt"):
-                fp = AGENT_DIR / fname
-                if fp.exists():
-                    z.writestr(f"VoyagerAgent/{fname}", fp.read_text(encoding="utf-8"))
-            z.writestr("VoyagerAgent/install_and_run.bat",
-                       "@echo off\r\ncd /d \"%~dp0\"\r\n"
-                       "python -m pip install -r requirements.txt\r\npython agent.py\r\npause\r\n")
-            z.writestr("VoyagerAgent/README.txt",
-                       "Source package (Python 3.11+ required). Double-click install_and_run.bat.\n")
+        # Standalone .exe build: Python + all dependencies are bundled inside. Nothing to
+        # install on the employee PC — double-click the .exe and it self-enrolls + auto-starts.
+        z.write(AGENT_EXE, "VoyagerAgent/VoyagerAgent.exe")
+        z.writestr("VoyagerAgent/README.txt",
+                   f"Voyager Endpoint Agent - {tenant.company_name}\n"
+                   f"Server : {config['server']}\nLicense: {lic.id}\n\n"
+                   "TO DEPLOY ON AN EMPLOYEE PC:\n"
+                   "  1. Copy this whole 'VoyagerAgent' folder to the PC.\n"
+                   "  2. Double-click VoyagerAgent.exe.\n\n"
+                   "No Python or other software is required - everything is bundled in the .exe.\n"
+                   "It enrolls automatically (reads agent_config.json), starts in the background,\n"
+                   "and re-launches at every logon. Keep the .exe and agent_config.json together.\n")
     audit.record(db, action="download_agent", tenant_id=tid, actor_id=user.id,
                  actor_email=user.email, target_type="tenant", target_id=tid,
-                 new_value={"format": "exe" if AGENT_EXE.exists() else "source"})
+                 new_value={"format": "exe"})
     db.commit()
     data = buf.getvalue()
     return Response(content=data, media_type="application/zip",

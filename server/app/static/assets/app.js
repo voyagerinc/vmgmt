@@ -964,6 +964,30 @@ VIEWS.settings = async (main) => {
       uc.appendChild(bar); uc.appendChild(status);
       if(!info.self_update_enabled) uc.appendChild(el(`<div class="muted" style="margin-top:8px">Self-update is disabled (EMP_ALLOW_SELF_UPDATE=false).</div>`));
       main.appendChild(uc);
+
+      // ---- Agent program (VoyagerAgent.exe) — what employees install; no Python needed ----
+      if(S.role==="platform_super_admin"){
+        const ac=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">Agent program (VoyagerAgent.exe)</h3>
+          <div class="notice" style="margin-bottom:10px">${info.has_agent_exe
+            ? "✓ VoyagerAgent.exe is available — agent downloads contain the .exe (no Python needed on employee PCs)."
+            : "⚠ VoyagerAgent.exe is not on this server yet. Agent downloads will not work until it is uploaded"+(info.role==="client_server"?" here or on the license server.":".")}</div>
+          <div class="muted" style="margin-bottom:10px">${info.role==="license_server"
+            ? "Upload it once here — every client server downloads it from this license server automatically."
+            : "Normally fetched automatically from the license server. Upload it here only if this server cannot reach the license server."}</div>
+          <div class="toolbar"><input type="file" accept=".exe" /><button class="btn">⬆ Upload VoyagerAgent.exe</button></div>
+          <div class="muted" style="margin-top:8px"></div></div>`);
+        const inp=ac.querySelector("input[type=file]"), st=ac.querySelector(".toolbar + .muted");
+        ac.querySelector(".toolbar .btn").onclick=async()=>{
+          const file=inp.files[0]; if(!file){ toast("Choose VoyagerAgent.exe first",true); return; }
+          const fd=new FormData(); fd.append("file",file);
+          st.textContent="Uploading "+file.name+" ("+Math.round(file.size/1048576)+" MB)…";
+          try{ const r=await api("/api/system/agent-exe",{method:"POST",body:fd});
+            st.textContent="✓ Uploaded ("+Math.round(r.size/1048576)+" MB). Agent downloads now include VoyagerAgent.exe.";
+            toast("VoyagerAgent.exe uploaded");
+          }catch(e){ st.textContent="✗ "+e.message; }
+        };
+        main.appendChild(ac);
+      }
     }catch(e){ /* system routes may be disabled */ }
   }
 

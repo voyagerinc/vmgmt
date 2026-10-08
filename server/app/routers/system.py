@@ -21,7 +21,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from .. import __version__, audit, get_build
@@ -186,6 +186,37 @@ def updates_download(component: str):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No staged {component} build")
     return Response(content=path.read_bytes(), media_type="application/octet-stream",
                     headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
+
+
+@router.post("/system/agent-exe")
+async def upload_agent_exe(request: Request, file: UploadFile = File(...),
+                           db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
+    """Upload the standalone VoyagerAgent.exe (built on Windows with PyInstaller). On the license
+    server every client server then pulls it automatically; on a client server it is used for
+    agent downloads directly."""
+    AGENT_EXE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = AGENT_EXE.with_suffix(".upload")
+    size = 0
+    head = b""
+    with open(tmp, "wb") as out:
+        while True:
+            chunk = await file.read(1 << 20)
+            if not chunk:
+                break
+            if not head:
+                head = chunk[:2]
+            size += len(chunk)
+            out.write(chunk)
+    if head != b"MZ" or size < 1_000_000:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "That is not VoyagerAgent.exe (expected a Windows .exe of several MB).")
+    tmp.replace(AGENT_EXE)
+    audit.record(db, action="agent_exe_upload", actor_id=admin.id, actor_email=admin.email,
+                 new_value={"size": size, "sha256": _sha256(AGENT_EXE), "filename": file.filename},
+                 source_ip=client_ip(request))
+    db.commit()
+    return {"ok": True, "size": size, "sha256": _sha256(AGENT_EXE)}
 
 
 # --------------------------------------------------------------- LICENSE SERVER: self-update
