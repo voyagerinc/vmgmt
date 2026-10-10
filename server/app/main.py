@@ -200,6 +200,8 @@ def meta(db: Session = Depends(get_db)):
     binfo = ss.get_setting(db, "build", None) or {}
     bid = get_build()
     v_display = f"v{__version__}" + (f" ({bid})" if bid else "")
+    from datetime import datetime, timezone
+    from .config import BASE_DIR
     mtime = None
     try:
         main_py = BASE_DIR / "app" / "main.py"
@@ -225,13 +227,26 @@ def meta(db: Session = Depends(get_db)):
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
+    def _index_page():
+        """index.html with the build id as the asset version, so browsers always load the
+        app.js/styles.css that belong to the running server (no stale cached console)."""
+        import re as _re
+        from fastapi.responses import HTMLResponse
+        from . import get_build
+        v = get_build() or __version__
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        html = _re.sub(r"(/assets/(?:app\.js|styles\.css))\?v=[^\"']*", rf"\1?v={v}", html)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        return _index_page()
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
+        if path == "api" or path.startswith("api/"):          # unknown API route: a real 404, never the page
+            return JSONResponse({"detail": f"Not found: /{path}"}, status_code=404)
         candidate = STATIC_DIR / path
         if candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(STATIC_DIR / "index.html")
+        return _index_page()

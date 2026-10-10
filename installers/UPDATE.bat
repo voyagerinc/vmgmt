@@ -61,10 +61,18 @@ if %ZSIZE% LSS 1000 (
   pause & exit /b 1
 )
 
-echo [2/5] Stopping service ...
+echo [2/5] Stopping the Management Server ...
 net stop EndpointMgmtServer >nul 2>&1
-taskkill /f /im python.exe >nul 2>&1
-timeout /t 2 /nobreak >nul 2>&1
+rem stop whatever still serves port 9084 (python.exe, or pythonw.exe from a background start):
+rem otherwise the OLD server keeps running with old code while the new files are on disk
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /R /C:":9084 .*LISTENING"') do taskkill /f /pid %%p >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+netstat -an | findstr /R /C:":9084 .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+  echo [ERROR] The old server is still running on port 9084 and could not be stopped.
+  echo         Close it in Task Manager ^(python.exe / pythonw.exe^) and run UPDATE.bat again.
+  pause & exit /b 1
+)
 
 echo [3/5] Extracting (your data and .env are preserved) ...
 if exist "%TMPDIR%" rmdir /s /q "%TMPDIR%"
@@ -111,15 +119,40 @@ if defined PY (
   echo [WARN] Python not found - skipped dependency update.
 )
 
-echo [5/5] Starting service ...
+echo [5/5] Starting the Management Server ...
 net start EndpointMgmtServer >nul 2>&1
+call :waitport
+if not errorlevel 1 goto :started
+rem no service: start in the background (no window), like SETUP_AND_RUN.bat
+set "PYW=pythonw"
+if defined PY if /i not "%PY%"=="python" set "PYW=%PY:python.exe=pythonw.exe%"
+pushd server
+start "VoyagerServer" "%PYW%" run_server.py --no-browser
+popd
+call :waitport
 if errorlevel 1 (
-  if defined PY ( pushd server & start "Voyager Server" "%PY%" run_server.py & popd )
+  echo [ERROR] The server did not start on port 9084. Last lines of server\logs\server.log :
+  powershell -NoProfile -Command "if (Test-Path 'server\logs\server.log') { Get-Content 'server\logs\server.log' -Tail 20 }"
+  pause & exit /b 1
 )
+:started
 
 echo.
 echo ================================================================
-echo   Update complete. Open the admin console and check
-echo   Settings -> Software updates for the new version/date.
+echo   Update complete - the new version is running.
+echo   In the browser press Ctrl+F5 on the admin console, then check
+echo   Settings -^> Software updates for the new version/date.
 echo ================================================================
 pause
+goto :eof
+
+rem ---- wait up to ~30s for port 9084 to be listening; errorlevel 0 = up ----
+:waitport
+set /a "WAITS=0"
+:waitport_loop
+netstat -an | findstr /R /C:":9084 .*LISTENING" >nul 2>&1
+if not errorlevel 1 exit /b 0
+set /a "WAITS+=1"
+if %WAITS% GEQ 15 exit /b 1
+ping -n 3 127.0.0.1 >nul
+goto :waitport_loop

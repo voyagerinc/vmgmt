@@ -27,9 +27,13 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = res.statusText;
     try { const j = await res.json(); msg = j.detail || JSON.stringify(j); } catch {}
+    if (res.status === 404 && /^Not found: \/api\//.test(msg))
+      msg = "This server does not support this page yet (" + path.split("?")[0] + "). It is probably still running an older version — restart the Management Server (or run UPDATE.bat again), then reload with Ctrl+F5.";
     throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
   }
   const ct = res.headers.get("content-type") || "";
+  if (ct.includes("text/html") && path.startsWith("/api/"))
+    throw new Error("The server returned a web page instead of data for " + path.split("?")[0] + ". It is probably still running an older version — restart the Management Server, then reload with Ctrl+F5.");
   return ct.includes("application/json") ? res.json() : res;
 }
 function qp(extra = {}) {
