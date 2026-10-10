@@ -109,8 +109,13 @@ def system_info(db: Session = Depends(get_db), admin: AdminUser = Depends(_UPD))
 
 def _get_or_build_bundle() -> Path | None:
     target = BUNDLE if BUNDLE.parent.exists() else (REPO_DIR / "EndpointManagementServer-Universal-Windows.zip")
-    needs_build = not target.exists()
-    if target.exists():
+    # Rebuild whenever the code version changed (any file, not just the few checked below);
+    # the commit the bundle was built from is stored next to it.
+    stamp = target.with_name(target.name + ".build")
+    current = get_build() or ""
+    needs_build = not target.exists() or not stamp.exists() or \
+        stamp.read_text(encoding="utf-8").strip() != current
+    if target.exists() and not needs_build:
         try:
             scaffold = REPO_DIR / "installers" / "win2012_scaffold"
             builder = REPO_DIR / "installers" / "build_universal_bundle.py"
@@ -134,11 +139,13 @@ def _get_or_build_bundle() -> Path | None:
         try:
             builder = REPO_DIR / "installers" / "build_universal_bundle.py"
             if builder.exists():
-                _run([sys.executable, str(builder)], cwd=REPO_DIR, timeout=60)
+                r = _run([sys.executable, str(builder)], cwd=REPO_DIR, timeout=120)
                 root_zip = REPO_DIR / "EndpointManagementServer-Universal-Windows.zip"
                 if root_zip.exists() and target != root_zip:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(root_zip, target)
+                if r.get("code") == 0 and target.exists():
+                    stamp.write_text(current, encoding="utf-8")
         except Exception:
             pass
     if target.exists():
