@@ -64,6 +64,7 @@ _COLUMN_MIGRATIONS = [
     ("devices", "tracking_profile_id", "VARCHAR(32)", "NULL"),
     ("devices", "current_user", "VARCHAR(120)", "NULL"),
     ("devices", "logged_users", "JSON", "'[]'"),
+    ("devices", "hardware", "JSON", "'{}'"),
 ]
 
 

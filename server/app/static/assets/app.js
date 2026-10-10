@@ -141,6 +141,7 @@ const NAV = [
   ["reports","Reports","▭"],
   ["downloads","Downloads","⬇"],
   ["repair","Agent Repair","🛠"],
+  ["deploy","Domain Deploy","🖧"],
   ["licenses","Licenses & Tenants","🔑"],
   ["audit","Audit Logs","❏"],
   ["settings","Settings","⋯"],
@@ -645,6 +646,85 @@ VIEWS.repair = async (main) => {
     modal(`Repair — ${x.hostname}`,tableFrom(["","Step","Result"],(x.steps||[]).map(s=>[s.ok?'<span class="badge b-ok">✓</span>':'<span class="badge b-high">✗</span>',esc(s.step),esc(s.detail)])),null,"Close"); });
   main.appendChild(rc);
 };
+
+VIEWS.deploy = async (main) => {
+  main.innerHTML=""; main.appendChild(topbar("Domain Deploy"));
+  const cap=await api("/api/deploy/capability").catch(()=>({supported:false,reason:"unavailable"}));
+  if(!cap.supported){
+    main.appendChild(el(`<div class="notice">${esc(cap.reason||"Domain deployment is not available on this server.")}</div>`));
+    main.appendChild(el(`<div class="muted" style="margin-top:10px">Domain Deploy installs or repairs the agent on company PCs from here, with no visit to each PC. It runs from a <b>Windows client server</b> that is on the company network with a <b>domain administrator</b> account, and needs File &amp; Printer Sharing (admin shares) and the Remote Scheduled Tasks service reachable on the PCs.</div>`));
+    return;
+  }
+  if(!cap.has_agent){ main.appendChild(el(`<div class="notice">Upload VoyagerAgent.exe first in <a href="#settings">Settings → Agent program</a>.</div>`)); return; }
+  main.appendChild(el(`<div class="muted" style="margin-bottom:12px">Install or repair the agent on domain computers from here${cap.domain?` (domain <b>${esc(cap.domain)}</b>)`:""}. Needs a domain admin account; the password is used only for the job and never stored. Requires admin shares (TCP 445) and Remote Scheduled Tasks (RPC) reachable on the PCs.</div>`));
+  const bar=el(`<div class="toolbar" style="margin-bottom:10px"><button class="btn sm" id="disc">🔍 Find domain computers</button>
+    <input id="manual" placeholder="or type names: PC1, PC2, 192.168.1.20" style="flex:1;min-width:240px"/>
+    <button class="btn sm ghost" id="addManual">Add typed</button></div>`);
+  main.appendChild(bar);
+  const listCard=el(`<div class="card" style="margin-bottom:14px"><div class="muted">Click “Find domain computers”, or type names above.</div></div>`);
+  main.appendChild(listCard);
+  let comps=[];
+  const render=()=>{
+    listCard.innerHTML="";
+    if(!comps.length){ listCard.appendChild(el(`<div class="muted">No computers yet.</div>`)); return; }
+    listCard.appendChild(el(`<div style="margin-bottom:8px"><label><input type="checkbox" id="selAll"/> Select all (${comps.length})</label>
+      <span class="muted" style="margin-left:10px">Tip: untick PCs already up to date.</span></div>`));
+    const tbl=tableFrom(["","Computer","Agent","Status","Last seen"],
+      comps.map((c,i)=>[`<input type="checkbox" data-i="${i}" ${c.sel?"checked":""}/>`,esc(c.host),
+        c.enrolled?esc(c.agent_version||"yes"):'<span class="muted">not installed</span>',
+        c.status?statusBadge(c.status):"—",c.last_seen?ago(c.last_seen):"—"]));
+    listCard.appendChild(tbl);
+    listCard.querySelector("#selAll").onchange=(e)=>{ comps.forEach(c=>c.sel=e.target.checked); render(); };
+    listCard.querySelectorAll("[data-i]").forEach(cb=>cb.onchange=()=>{ comps[+cb.dataset.i].sel=cb.checked; });
+  };
+  const merge=(hosts,meta)=>{ hosts.forEach(h=>{ if(!comps.some(c=>c.host.toLowerCase()===h.toLowerCase())) comps.push({host:h,sel:true,...(meta||{})}); }); render(); };
+  bar.querySelector("#disc").onclick=async()=>{ bar.querySelector("#disc").textContent="Searching…";
+    try{ const r=await api("/api/deploy/computers"); comps=r.computers.map(c=>({...c,sel:!c.enrolled||c.status!=="active"})); render();
+      toast(`${r.discovered} computer(s) from Active Directory`); }catch(e){ toast(e.message,true); } finally{ bar.querySelector("#disc").textContent="🔍 Find domain computers"; } };
+  bar.querySelector("#addManual").onclick=()=>{ const names=bar.querySelector("#manual").value.split(/[,;\s]+/).filter(Boolean); if(names.length){ merge(names); bar.querySelector("#manual").value=""; } };
+
+  const act=el(`<div class="card"><h3 style="margin:0 0 10px">Run on selected computers</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+      <div class="field" style="margin:0"><label>Action</label><select id="dAct"><option value="install">Install / update agent</option><option value="repair">Repair agent</option></select></div>
+      <div class="field" style="margin:0"><label>Domain admin username</label><input id="dUser" placeholder="DOMAIN\\administrator" autocomplete="off"/></div>
+      <div class="field" style="margin:0"><label>Password (used once, not stored)</label><input id="dPass" type="password" autocomplete="new-password"/></div>
+      <button class="btn" id="dGo">Deploy to selected</button></div>
+    <div id="dStatus" class="muted" style="margin-top:10px"></div></div>`);
+  main.appendChild(act);
+  const prog=el(`<div class="card" style="margin-top:14px;display:none"></div>`); main.appendChild(prog);
+  act.querySelector("#dGo").onclick=async()=>{
+    const hosts=comps.filter(c=>c.sel).map(c=>c.host);
+    if(!hosts.length){ toast("Select at least one computer",true); return; }
+    const u=act.querySelector("#dUser").value.trim(), p=act.querySelector("#dPass").value;
+    if(!u||!p){ toast("Enter the domain admin username and password",true); return; }
+    if(!confirm(`${act.querySelector("#dAct").value==="repair"?"Repair":"Install"} the agent on ${hosts.length} computer(s)?`)) return;
+    act.querySelector("#dStatus").textContent="Starting…";
+    try{ const r=await api("/api/deploy",{method:"POST",body:{hosts,action:act.querySelector("#dAct").value,admin_user:u,admin_password:p}});
+      act.querySelector("#dPass").value=""; act.querySelector("#dStatus").textContent=`Job started for ${r.total} computer(s).`;
+      pollJob(r.job_id,prog);
+    }catch(e){ act.querySelector("#dStatus").textContent="✗ "+e.message; }
+  };
+  const jobs=await api("/api/deploy/jobs").catch(()=>[]);
+  if(jobs.length){ const h=el(`<h3 style="margin:16px 0 8px">Recent deployments</h3>`); main.appendChild(h);
+    main.appendChild(cardTable("",["When","Action","By","Done","OK","Failed","Status"],
+      jobs.map(j=>[fmtDate(j.created_at),esc(j.action),esc(j.created_by||"—"),`${j.succeeded+j.failed}/${j.total}`,
+        j.succeeded,j.failed?`<span class="badge b-high">${j.failed}</span>`:0,
+        j.status==="running"?'<span class="badge b-pending">running</span>':'<span class="badge b-ok">done</span>']))); }
+};
+function pollJob(jobId, card){
+  card.style.display="block";
+  const tick=async()=>{
+    try{ const j=await api(`/api/deploy/jobs/${jobId}`);
+      card.innerHTML=`<h3 style="margin:0 0 8px">Deployment — ${j.succeeded+j.failed} of ${j.total} · ✓ ${j.succeeded} · ✗ ${j.failed} ${j.status==="running"?'<span class="badge b-pending">running…</span>':'<span class="badge b-ok">finished</span>'}</h3>`;
+      card.appendChild(tableFrom(["Computer","Result","Detail"],
+        (j.targets||[]).map(t=>[esc(t.host),t.status==="ok"?'<span class="badge b-ok">✓ started</span>':'<span class="badge b-high">✗ failed</span>',
+          `<span style="white-space:pre-wrap">${esc(t.detail||"")}</span>`])));
+      if(j.status==="running") setTimeout(tick,2000);
+      else toast(`Deployment finished: ${j.succeeded} ok, ${j.failed} failed`);
+    }catch(e){ card.innerHTML=`<div class="muted">${esc(e.message)}</div>`; }
+  };
+  tick();
+}
 
 /* ---------------- period + computer filter shared by Activity and Reports ---------------- */
 const ymd=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;

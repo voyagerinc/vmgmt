@@ -22,7 +22,7 @@ import requests
 
 import collectors
 
-__version__ = "4.6.0"
+__version__ = "4.7.0"
 
 
 def _stamped_version() -> str:

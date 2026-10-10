@@ -563,6 +563,22 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class DeployJob(Base):
+    """A domain push: install or repair the agent on a set of computers from the client panel."""
+    __tablename__ = "deploy_jobs"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    action: Mapped[str] = mapped_column(String(20), default="install")   # install | repair
+    status: Mapped[str] = mapped_column(String(20), default="running")   # running | done
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    succeeded: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    targets: Mapped[list] = mapped_column(JSON, default=list)   # [{host, status, detail}]
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class SchemaVersion(Base):
     __tablename__ = "schema_version"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
