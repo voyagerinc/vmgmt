@@ -196,12 +196,22 @@ def updates_download(component: str):
 
 
 @router.get("/updates/agent-info")
-def updates_agent_info():
-    """License server: checksum of the staged VoyagerAgent.exe so client servers can tell
-    whether their cached copy is current (cheap; no download)."""
-    if not AGENT_EXE.exists():
+def updates_agent_info(device_id: str | None = None, db: Session = Depends(get_db)):
+    """Staged VoyagerAgent.exe: version + checksum (client servers compare it with their cached
+    copy). With ?device_id= (asked by the PC's updater) also whether this computer is approved
+    to update now. Public: it only reveals the version and an approve yes/no."""
+    from ..models import Device
+    from ..services import agent_update as au
+    if settings.license_server:
+        au.sync_from_license_server()                   # client server: pick up newer cloud builds
+    info = au.exe_info(AGENT_EXE)
+    if not info:
         return {"available": False}
-    return {"available": True, "sha256": _sha256(AGENT_EXE), "size": AGENT_EXE.stat().st_size}
+    out = {"available": True, **info}
+    if device_id:
+        dev = db.get(Device, device_id)
+        out["approved"] = au.approved(db, dev, info["version"])
+    return out
 
 
 @router.post("/system/agent-exe")
@@ -232,7 +242,12 @@ async def upload_agent_exe(request: Request, file: UploadFile = File(...),
                  new_value={"size": size, "sha256": _sha256(AGENT_EXE), "filename": file.filename},
                  source_ip=client_ip(request))
     db.commit()
-    return {"ok": True, "size": size, "sha256": _sha256(AGENT_EXE)}
+    from ..services import agent_update as au
+    info = au.exe_info(AGENT_EXE) or {}
+    return {"ok": True, "size": size, "sha256": _sha256(AGENT_EXE), "version": info.get("version"),
+            "warning": None if info.get("version") else
+            "No version stamp found in this build - computers cannot auto-update to it. "
+            "Build the agent with installers/build.py voyageragent."}
 
 
 # --------------------------------------------------------------- LICENSE SERVER: self-update

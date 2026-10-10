@@ -17,6 +17,7 @@ from .config import LOG_DIR, settings
 from .database import SessionLocal, get_db, init_db
 from .bootstrap import ensure_bootstrap
 from .routers import (
+    agent_updates,
     agents,
     alerts,
     auth,
@@ -183,7 +184,7 @@ async def security_headers(request: Request, call_next):
 
 # API routers
 for r in (auth, portal, users, agents, devices, directory, inventory, policies, alerts,
-          evidence, reports, settings_router, downloads, system_router, tracking_router):
+          evidence, reports, settings_router, downloads, system_router, tracking_router, agent_updates):
     app.include_router(r.router)
 
 

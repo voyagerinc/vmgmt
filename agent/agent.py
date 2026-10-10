@@ -21,7 +21,26 @@ import requests
 
 import collectors
 
-__version__ = "4.2.0"
+__version__ = "4.3.0"
+
+
+def _stamped_version() -> str:
+    """The version the build stamped into this .exe (VOYAGER_AGENT_VERSION), else __version__.
+    Servers compare against the stamp, so using it here keeps both sides in agreement."""
+    if not getattr(sys, "frozen", False):
+        return __version__
+    import re
+    try:
+        with open(sys.executable, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 65536))
+            m = re.findall(rb"VOYAGER_AGENT_VERSION:([0-9][0-9A-Za-z.\-]{0,30}):END_VOYAGER_AGENT_VERSION", f.read())
+        return m[-1].decode() if m else __version__
+    except OSError:
+        return __version__
+
+
+AGENT_VERSION = _stamped_version()
 
 STATE_DIR = Path(os.environ.get("PROGRAMDATA", str(Path.home()))) / "EndpointAgent"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -95,7 +114,7 @@ class Agent:
             "license_id": license_id, "enroll_token": token,
             "machine_uid": collectors.machine_uid(), "hostname": collectors.hostname(),
             "os_name": os_name, "os_version": os_ver, "ip_address": collectors.primary_ip(),
-            "mac_address": collectors.mac_address(), "agent_version": __version__,
+            "mac_address": collectors.mac_address(), "agent_version": AGENT_VERSION,
             "hardware": collectors.hardware(),
         }
         try:
@@ -128,7 +147,7 @@ class Agent:
     # ------------------------------------------------------------- heartbeat
     def _build_heartbeat(self) -> dict:
         # Only collect what the server's per-agent profile enables (data minimization).
-        body: dict = {"agent_version": __version__, "ip_address": collectors.primary_ip(),
+        body: dict = {"agent_version": AGENT_VERSION, "ip_address": collectors.primary_ip(),
                       "policy_version": self.policy_version, "activity": [], "file_events": []}
         if self.collection.get("health", True):
             body["health"] = collectors.health()
@@ -239,42 +258,38 @@ class Agent:
             log.warning("Evidence upload error: %s", e)
 
     def _self_update(self, upd: dict) -> None:
-        """Download a newer agent .exe from the (client) server, verify it, swap + restart.
+        """Approved agent update offered in the heartbeat (PRD §30).
 
-        Only runs for the packaged .exe on Windows (PRD §30). Best-effort and idempotent.
-        """
-        import hashlib
-        if upd.get("version") == __version__:
+        Per-user installs (%LOCALAPPDATA%) swap their own .exe here. Installs for all users
+        (Program Files) are not writable by this process: the SYSTEM updater task does it, and
+        this agent restarts itself when it sees its .exe replaced (_exe_replaced)."""
+        if vtuple(upd.get("version")) <= vtuple(AGENT_VERSION) or not _is_installed_copy():
             return
+        if Path(sys.executable).resolve().parent != USER_DIR.resolve():
+            return                                      # machine-wide install: SYSTEM task updates it
+        if _apply_update(USER_DIR, upd["url"], upd.get("sha256"), upd.get("version"), self.session):
+            log.info("Agent %s installed; restarting", upd.get("version"))
+
+    def _exe_replaced(self) -> bool:
+        """True when our .exe on disk was swapped for a newer build (by an updater)."""
         try:
-            cur = Path(sys.executable).resolve()
-            newexe = cur.parent / "VoyagerAgent.new.exe"
-            log.info("Self-update: downloading agent %s", upd.get("version"))
-            r = self.session.get(upd["url"], headers=self._auth_headers(), timeout=120)
-            if not r.ok:
-                log.warning("Self-update download failed: %s", r.status_code)
-                return
-            newexe.write_bytes(r.content)
-            if upd.get("sha256") and hashlib.sha256(r.content).hexdigest() != upd["sha256"]:
-                newexe.unlink(missing_ok=True)
-                log.warning("Self-update checksum mismatch — aborted")
-                return
-            if os.name == "nt":
-                import subprocess
-                bat = cur.parent / "agent_update.bat"
-                bat.write_text(
-                    "@echo off\r\ntimeout /t 3 /nobreak >NUL\r\n"
-                    'schtasks /end /tn "VoyagerEndpointAgent" >NUL 2>&1\r\n'
-                    f'taskkill /f /im "{cur.name}" >NUL 2>&1\r\n'
-                    "timeout /t 2 /nobreak >NUL\r\n"
-                    f'move /y "{newexe}" "{cur}" >NUL\r\n'
-                    f'start "" "{cur}"\r\n', encoding="utf-8")
-                subprocess.Popen(["cmd", "/c", str(bat)],
-                                 creationflags=0x00000008 | 0x00000200, close_fds=True)
-                log.info("Self-update staged; restarting to apply %s", upd.get("version"))
-                self._running = False
-        except Exception as e:
-            log.warning("Self-update error: %s", e)
+            st = Path(sys.executable).stat()
+            return (st.st_size, st.st_mtime) != self._exe_sig
+        except OSError:
+            return False
+
+    def _restart_into_new_exe(self) -> None:
+        import ctypes
+        import subprocess
+        log.info("Agent .exe was updated - restarting into the new version")
+        global _mutex
+        if _mutex:                                       # let the new copy take the session slot
+            ctypes.windll.kernel32.CloseHandle(_mutex)
+            _mutex = None
+        subprocess.Popen([sys.executable], close_fds=True, creationflags=0x00000008 | 0x00000200)
+        self._running = False
+        if self.tracker:
+            self.tracker.stop()
 
     def _status(self, status: str) -> None:
         (STATE_DIR / "status.txt").write_text(status, encoding="utf-8")
@@ -300,11 +315,15 @@ class Agent:
             log.warning("Interval screenshot upload failed: %s", e)
 
     def run(self) -> None:
-        log.info("Agent %s starting on %s", __version__, platform.platform())
+        log.info("Agent %s starting on %s", AGENT_VERSION, platform.platform())
         signal.signal(signal.SIGINT, self._stop)
         signal.signal(signal.SIGTERM, self._stop)
         if self.tracker and self.state.get("tracking"):
             self.tracker.apply(self.state["tracking"])      # last known profile, before 1st heartbeat
+        watch_exe = FROZEN and os.name == "nt" and _is_installed_copy()
+        if watch_exe:
+            st = Path(sys.executable).stat()
+            self._exe_sig = (st.st_size, st.st_mtime)
         while self._running:
             self._flush_queue()
             resp = self._post_heartbeat(self._build_heartbeat())
@@ -318,6 +337,9 @@ class Agent:
                     self._interval_capture()
                 if self.tracker:
                     self.tracker.maybe_flush()
+                if watch_exe and slept % 30 == 0 and self._exe_replaced():
+                    self._restart_into_new_exe()
+                    return
 
     def _stop(self, *_):
         log.info("Agent stopping")
@@ -441,12 +463,123 @@ def _stop_running_copies(dest_exe: Path) -> None:
         log.warning("Could not stop running agent: %s", e)
 
 
-def _install(machine_wide: bool) -> Path:
+UPDATER_TASK = "VoyagerAgentUpdater"
+
+
+def vtuple(v) -> tuple:
+    try:
+        return tuple(int(x) for x in str(v).split(".")[:3])
+    except Exception:
+        return (0,)
+
+
+def _apply_update(install_dir: Path, url: str, sha256: str | None, version: str | None, session=None) -> bool:
+    """Download the new agent next to the installed one, verify it, then swap: a running .exe
+    can be renamed (not deleted), so running agents keep going and restart into the new file
+    when they notice it (no logoff, no killing other users' agents)."""
+    import hashlib
+    cur = install_dir / "VoyagerAgent.exe"
+    new = install_dir / "VoyagerAgent.new"
+    sess = session or requests.Session()
+    try:
+        h = hashlib.sha256()
+        size = 0
+        with sess.get(url, stream=True, timeout=300) as r:
+            if not r.ok:
+                log.warning("Update download failed: HTTP %s", r.status_code)
+                return False
+            with open(new, "wb") as f:
+                for chunk in r.iter_content(1 << 20):
+                    if chunk:
+                        f.write(chunk)
+                        h.update(chunk)
+                        size += len(chunk)
+        with open(new, "rb") as f:
+            magic = f.read(2)
+        if magic != b"MZ" or size < 1_000_000 or (sha256 and h.hexdigest() != sha256):
+            log.warning("Update rejected: not a valid agent build (size=%s, checksum mismatch=%s)",
+                        size, bool(sha256 and h.hexdigest() != sha256))
+            new.unlink(missing_ok=True)
+            return False
+        old = install_dir / f"VoyagerAgent.old-{int(time.time())}.exe"
+        cur.rename(old)                                  # allowed while it is running
+        try:
+            new.rename(cur)
+        except OSError:
+            old.rename(cur)                              # roll back
+            raise
+        try:
+            meta = json.loads((install_dir / "machine.json").read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+        meta["version"] = version
+        try:
+            (install_dir / "machine.json").write_text(json.dumps(meta), encoding="utf-8")
+        except OSError:
+            pass
+        log.info("Agent updated to %s in %s", version, install_dir)
+        return True
+    except Exception as e:
+        log.warning("Update failed: %s", e)
+        try:
+            new.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+
+def run_updater() -> int:
+    """`VoyagerAgent.exe --update`, run every 10 minutes by the SYSTEM task of an all-users install.
+
+    Trusts only machine.json in the admin-only install folder (server address, device id), asks
+    the server whether a newer agent is approved for this computer, and swaps it in."""
+    install_dir = Path(sys.executable).resolve().parent
+    for stale in install_dir.glob("VoyagerAgent.old-*.exe"):     # left by an earlier update
+        try:
+            stale.unlink()
+        except OSError:
+            pass                                                  # still running somewhere
+    try:
+        meta = json.loads((install_dir / "machine.json").read_text(encoding="utf-8"))
+    except Exception:
+        log.info("Updater: no machine.json in %s - nothing to do", install_dir)
+        return 0
+    server = (meta.get("server") or "").rstrip("/")
+    if not server:
+        return 0
+    installed = meta.get("version") or AGENT_VERSION
+    try:
+        params = {"device_id": meta["device_id"]} if meta.get("device_id") else None
+        info = requests.get(f"{server}/api/updates/agent-info", params=params, timeout=30).json()
+    except Exception as e:
+        log.info("Updater: server not reachable (%s)", e)
+        return 0
+    ver = info.get("version")
+    if not info.get("available") or not ver or vtuple(ver) <= vtuple(installed):
+        return 0
+    if not info.get("approved"):
+        log.info("Updater: agent %s available but not approved for this computer yet", ver)
+        return 0
+    ok = _apply_update(install_dir, f"{server}/api/updates/download/agent", info.get("sha256"), ver)
+    return 0 if ok else 1
+
+
+def _write_machine_meta(dest_dir: Path, server: str, device_id: str | None) -> None:
+    try:
+        (dest_dir / "machine.json").write_text(json.dumps(
+            {"server": server, "device_id": device_id, "version": AGENT_VERSION}), encoding="utf-8")
+    except OSError as e:
+        log.warning("Could not write machine.json: %s", e)
+
+
+def _install(machine_wide: bool, server: str = "", device_id: str | None = None) -> Path:
     """Copy this .exe (it carries its own config) to the install folder and register autostart.
 
     machine_wide (run as administrator): C:\\Program Files\\VoyagerAgent, started for EVERY user
-    at logon (HKLM Run), state folder writable by all users, outbound firewall rule.
-    Otherwise: %LOCALAPPDATA%\\VoyagerAgent + a per-user logon task (no admin needed).
+    at logon (HKLM Run), state folder writable by all users, outbound firewall rule, and a SYSTEM
+    task that applies approved agent updates every 10 minutes.
+    Otherwise: %LOCALAPPDATA%\\VoyagerAgent + a per-user logon task (no admin needed); that copy
+    updates itself from the heartbeat.
     """
     import shutil
     import subprocess
@@ -467,7 +600,14 @@ def _install(machine_wide: bool) -> Path:
         subprocess.run(["icacls", str(STATE_DIR), "/grant", "*S-1-5-32-545:(OI)(CI)M", "/T", "/C", "/Q"],
                        capture_output=True)
         _add_firewall_rule(dest_exe)
+        _write_machine_meta(dest_dir, server, device_id)   # admin-only folder: updater's trust root
+        r = subprocess.run(["schtasks", "/create", "/tn", UPDATER_TASK, "/tr", f'"{dest_exe}" --update',
+                            "/sc", "minute", "/mo", "10", "/ru", "SYSTEM", "/rl", "HIGHEST", "/f"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            log.warning("Updater task not created: %s", (r.stdout or r.stderr).strip())
     else:
+        _write_machine_meta(dest_dir, server, device_id)
         subprocess.run(["schtasks", "/create", "/tn", AUTOSTART_NAME, "/tr", f'"{dest_exe}"',
                         "/sc", "onlogon", "/rl", "limited", "/f"], capture_output=True)
     log.info("Installed %s (%s)", dest_exe, "all users" if machine_wide else "current user")
@@ -542,7 +682,12 @@ def main() -> int:
     ap.add_argument("--token", default=cfg.get("enroll_token"),
                     help="Enrollment token (first enrollment only)")
     ap.add_argument("--reenroll", action="store_true", help="Force re-enrollment")
+    ap.add_argument("--update", action="store_true",
+                    help="Apply an approved agent update (run by the SYSTEM updater task)")
     args = ap.parse_args()
+
+    if args.update:
+        return run_updater()
 
     if not args.server and STATE_FILE.exists():
         try:                       # already enrolled: keep using the saved server (e.g. after self-update)
@@ -570,7 +715,7 @@ def main() -> int:
         if not _enroll_if_needed(agent, args):
             return 3
         try:
-            dest = _install(machine_wide)
+            dest = _install(machine_wide, args.server, agent.state.get("device_id"))
         except Exception as e:
             log.error("Install failed: %s", e)
             _show_message(f"The agent is enrolled but could not be installed:\n{e}")

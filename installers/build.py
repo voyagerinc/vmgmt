@@ -88,6 +88,17 @@ def build_voyager_agent() -> None:
     import re
     ver = re.search(r'__version__ = "([^"]+)"', (agent / "agent.py").read_text(encoding="utf-8")).group(1)
     (out / "version.json").write_text(json.dumps({"agent": ver}), encoding="utf-8")
+    # stamp the version into the .exe itself: servers read it to offer/approve agent updates
+    import time
+    for attempt in range(30):                 # antivirus often holds a fresh .exe for a few seconds
+        try:
+            with open(out / "VoyagerAgent.exe", "ab") as f:
+                f.write(f"\r\nVOYAGER_AGENT_VERSION:{ver}:END_VOYAGER_AGENT_VERSION\r\n".encode())
+            break
+        except PermissionError:
+            if attempt == 29:
+                raise
+            time.sleep(1)
     print("VoyagerAgent.exe ->", out / "VoyagerAgent.exe", f"(agent {ver})")
 
 

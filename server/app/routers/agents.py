@@ -198,7 +198,7 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         policies=policies_payload,
         collection=device.collection or {},
         tracking=trk.agent_payload(db, device),
-        agent_update=_agent_update_offer(body.agent_version),
+        agent_update=_agent_update_offer(db, device, body.agent_version),
         screenshot_jobs=job_payloads,
         remote_sessions=sess_payloads,
         server_time=_now(),
@@ -217,36 +217,17 @@ def agent_events(body: dict, device: Device = Depends(get_agent_device), db: Ses
     return {"ok": True, "stored": n, "tracking": trk.agent_payload(db, device)}
 
 
-def _agent_update_offer(current: str | None) -> dict | None:
-    """Offer a newer agent build if this (client) server has one staged (PRD §30)."""
-    import hashlib
-    import json as _json
-    exe = BASE_DIR / "agent_dist" / "VoyagerAgent.exe"
-    if not exe.exists():
+def _agent_update_offer(db: Session, device: Device, current: str | None) -> dict | None:
+    """Offer the staged agent (PRD §30) when it is newer than the device's and the company
+    approved the update (auto / "Update all now" / per-computer "Update")."""
+    from ..services import agent_update as au
+    info = au.exe_info()
+    if not info or not info["version"] or au.vtuple(info["version"]) <= au.vtuple(current or "0"):
         return None
-    vfile = exe.parent / "version.json"
-    ver = None
-    if vfile.exists():
-        try:
-            ver = _json.loads(vfile.read_text(encoding="utf-8")).get("agent")
-        except Exception:
-            ver = None
-    if not ver:
+    if not au.approved(db, device, info["version"]):
         return None
-
-    def _t(v):
-        try:
-            return tuple(int(x) for x in str(v).split(".")[:3])
-        except Exception:
-            return (0,)
-    if current and _t(ver) <= _t(current):
-        return None
-    h = hashlib.sha256()
-    with open(exe, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return {"version": ver, "url": f"{settings.server_public_url.rstrip('/')}/api/updates/download/agent",
-            "sha256": h.hexdigest()}
+    return {"version": info["version"], "sha256": info["sha256"], "size": info["size"],
+            "url": f"{settings.server_public_url.rstrip('/')}/api/updates/download/agent"}
 
 
 @router.post("/screenshot/{job_id}")

@@ -1166,6 +1166,35 @@ VIEWS.settings = async (main) => {
     }catch(e){}
   }
 
+  // ---- Agent updates: versions per computer, approve updates (no reinstall needed) ----
+  if(["customer_owner","it_admin"].includes(S.role)){
+    const uc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">Agent updates</h3></div>`);
+    main.appendChild(uc);
+    const render=(u)=>{
+      uc.querySelectorAll(":scope > :not(h3)").forEach(n=>n.remove());
+      uc.appendChild(el(`<div class="muted" style="margin-bottom:10px">Latest agent on this server: <b>${esc(u.available_version||"none")}</b>
+        · ${u.outdated} of ${u.devices.length} computer(s) need an update. Approved updates install on their own within about
+        10 minutes (computers installed for all users) or 1 minute (per-user installs) — no reinstall, no logoff.
+        Computers that still run an agent older than 4.3 need one last reinstall to get automatic updates.</div>`));
+      if(u.note) uc.appendChild(el(`<div class="notice">${esc(u.note)}</div>`));
+      const bar=el(`<div class="toolbar" style="margin-bottom:10px;align-items:center;gap:14px">
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="auau" ${u.auto?"checked":""}/> Update agents automatically when a new version is available</label>
+        <button class="btn" id="auall" ${u.available_version&&u.outdated?"":"disabled"}>⬆ Update all agents now</button></div>`);
+      uc.appendChild(bar);
+      bar.querySelector("#auau").onchange=async(e)=>{ try{ render(await api("/api/agent-updates"+qp(),{method:"PUT",body:{auto:e.target.checked}})); toast(e.target.checked?"Automatic agent updates on":"Automatic agent updates off"); }catch(err){ toast(err.message,true); } };
+      bar.querySelector("#auall").onclick=async()=>{ if(!confirm(`Update every computer to agent ${u.available_version}?`)) return;
+        try{ render(await api("/api/agent-updates/approve"+qp(),{method:"POST",body:{all:true}})); toast("Update approved for all computers"); }catch(err){ toast(err.message,true); } };
+      uc.appendChild(tableFrom(["Computer","Agent version","Last seen","Update"],
+        u.devices.map(d=>[esc(d.hostname),esc(d.agent_version||"—"),fmtUtc(d.last_seen),
+          d.up_to_date?`<span class="badge b-ok">up to date</span>`
+          :d.pending?`<span class="badge b-pending">updating…</span>`
+          :u.available_version?`<button class="btn sm" data-upd="${d.id}">Update to ${esc(u.available_version)}</button>`:"—"])));
+      uc.querySelectorAll("[data-upd]").forEach(b=>b.onclick=async()=>{
+        try{ render(await api("/api/agent-updates/approve"+qp(),{method:"POST",body:{device_ids:[b.dataset.upd]}})); toast("Update approved for this computer"); }catch(err){ toast(err.message,true); } });
+    };
+    try{ render(await api("/api/agent-updates"+qp())); }catch(e){ uc.appendChild(el(`<div class="muted">${esc(e.message)}</div>`)); }
+  }
+
   // ---- Email (SMTP) setup — sysadmin: global; company owner: their tenant ----
   if(["platform_super_admin","customer_owner"].includes(S.role)){
     const scope = S.role==="platform_super_admin" ? "global" : "";
