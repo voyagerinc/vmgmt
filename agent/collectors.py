@@ -322,3 +322,24 @@ def capture_screenshot() -> bytes | None:
             return buf.getvalue()
     except Exception:
         return None
+
+
+def capture_jpeg(quality: int = 45, max_width: int = 1280, monitor: int = 0) -> bytes | None:
+    """Capture to JPEG for live view: small + fast. monitor 0 = all screens, 1 = primary, etc."""
+    try:
+        import io
+        from mss import mss
+        from PIL import Image
+        with mss() as sct:
+            mons = sct.monitors
+            mon = mons[monitor] if 0 <= monitor < len(mons) else mons[1 if len(mons) > 1 else 0]
+            raw = sct.grab(mon)
+            img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            if img.width > max_width:
+                img = img.resize((max_width, max(1, round(img.height * max_width / img.width))),
+                                 Image.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=max(20, min(90, quality)))
+            return buf.getvalue()
+    except Exception:
+        return None

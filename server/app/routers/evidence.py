@@ -39,6 +39,61 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ----------------------------------------------------------------- live screen view
+def _device_for_user(db, user, device_id):
+    d = db.get(Device, device_id)
+    if not d or (user.role != Role.PLATFORM_SUPER_ADMIN and d.tenant_id != user.tenant_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Device not found")
+    return d
+
+
+@router.post("/live/{device_id}/start")
+def live_start(device_id: str, body: dict | None = None, request: Request = None,
+               db: Session = Depends(get_db), user: AdminUser = Depends(_SCREENSHOT_REQ)):
+    """Admin: begin/keep a live-view session for a device (console calls it every few seconds).
+    The agent starts streaming within ~1 check interval; no employee notification (audited)."""
+    from ..services import live_view as lv
+    d = _device_for_user(db, user, device_id)
+    body = body or {}
+    first = not lv.is_wanted(device_id)
+    settings = {}
+    for k, cap in (("quality", 90), ("max_width", 1920), ("interval_ms", 5000), ("monitor", 8)):
+        if k in body:
+            try:
+                settings[k] = min(int(body[k]), cap)
+            except (TypeError, ValueError):
+                pass
+    lv.want(device_id, settings)
+    if first:
+        audit.record(db, action="live_view_start", tenant_id=d.tenant_id, actor_id=user.id,
+                     actor_email=user.email, target_type="device", target_id=d.id,
+                     source_ip=client_ip(request) if request else None)
+        db.commit()
+    f = lv.get_frame(device_id)
+    return {"ok": True, "streaming": f is not None, "age_ms": int((__import__("time").time() - f[0]) * 1000) if f else None,
+            "online": d.status.value == "active"}
+
+
+@router.get("/live/{device_id}/frame")
+def live_frame(device_id: str, db: Session = Depends(get_db), user: AdminUser = Depends(_SCREENSHOT_REQ)):
+    """Admin: newest live JPEG frame, or 204 while waiting for the first one."""
+    from ..services import live_view as lv
+    _device_for_user(db, user, device_id)
+    f = lv.get_frame(device_id)            # the console keeps the session alive via /start keepalives
+    if not f:
+        return Response(status_code=204)
+    return Response(content=f[1], media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store", "X-Frame-Age-Ms": str(int((__import__("time").time() - f[0]) * 1000))})
+
+
+@router.post("/live/{device_id}/stop")
+def live_stop(device_id: str, db: Session = Depends(get_db), user: AdminUser = Depends(_SCREENSHOT_REQ)):
+    from ..services import live_view as lv
+    _device_for_user(db, user, device_id)
+    lv.stop(device_id)
+    return {"ok": True}
+
+
 # ----------------------------------------------------------------- screenshots
 @router.post("/screenshots/request")
 def request_screenshot(body: ScreenshotRequestIn, request: Request, db: Session = Depends(get_db),

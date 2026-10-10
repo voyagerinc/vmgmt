@@ -413,7 +413,7 @@ async function deviceDetail(main, id){
   info.appendChild(el(`<div class="muted" style="margin-bottom:10px">${esc(dev.os_name||"")} ${esc(dev.os_version||"")} · ${esc(dev.ip_address||"")} · ${esc(dev.mac_address||"")} · agent ${esc(dev.agent_version||"?")}</div>`));
   const hw=dev.hardware||{};
   info.appendChild(el(`<div class="toolbar"><span class="pill">CPU: ${esc(hw.cpu||"?")}</span><span class="pill">RAM: ${esc(hw.ram_gb||"?")} GB</span><span class="pill">Disk: ${esc(hw.disk_gb||"?")} GB</span><span class="pill">Dept: ${esc(dev.department||"—")}</span><span class="pill">Loc: ${esc(dev.location||"—")}</span>
-    <button class="btn sm" id="viewBtn">👁 View screen (silent)</button><button class="btn sm ghost" id="ssBtn">Request screenshot</button><button class="btn sm ghost" id="rsBtn">Remote support</button><button class="btn sm ghost" id="syncBtn">Force resync</button></div>`));
+    <button class="btn sm" id="viewBtn">👁 Live screen (silent)</button><button class="btn sm ghost" id="ssBtn">Request screenshot</button><button class="btn sm ghost" id="rsBtn">Remote support</button><button class="btn sm ghost" id="syncBtn">Force resync</button></div>`));
   main.appendChild(info);
   info.querySelector("#viewBtn").onclick=()=>silentView(id, dev.hostname);
   info.querySelector("#ssBtn").onclick=()=>requestScreenshot(id);
@@ -1573,46 +1573,55 @@ async function imgBlobURL(path){
 // is NOT notified (company-owned device, per tenant monitoring policy). Every capture/view is
 // recorded in the audit log against the signed-in admin.
 function silentView(deviceId, hostname){
-  let stop=false, lastSeen=null;
+  let stop=false, fails=0, lastTag=null;
   const body=el(`<div>
-    <div class="notice">Silent view — the employee receives no notification. This session is audited. Frames arrive as the agent captures them (up to one heartbeat of latency).</div>
-    <div id="frameWrap" style="background:#000;border-radius:10px;min-height:260px;display:grid;place-items:center">
-      <span class="muted" id="frameStatus">Requesting first frame…</span>
+    <div class="notice">Live screen — the employee is not notified. This session is recorded in the audit log. Quality and speed adjust to the connection.</div>
+    <div id="frameWrap" style="position:relative;background:#000;border-radius:10px;min-height:300px;display:grid;place-items:center">
+      <span class="muted" id="frameStatus">Connecting to the computer…</span>
+      <div id="liveBadge" style="position:absolute;top:8px;left:8px;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;display:none">● LIVE</div>
     </div>
-    <div class="toolbar" style="margin-top:10px">
-      <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="autoCap" checked/> Auto-capture every 10s</label>
-      <button class="btn sm right" id="capNow">Capture frame now</button>
+    <div class="toolbar" style="margin-top:10px;align-items:center;gap:12px">
+      <label class="muted" style="display:flex;align-items:center;gap:6px">Quality
+        <select id="liveQ"><option value="35">Low (fast)</option><option value="55" selected>Medium</option><option value="80">High (sharp)</option></select></label>
+      <label class="muted" style="display:flex;align-items:center;gap:6px">Speed
+        <select id="liveS"><option value="1500">Slow</option><option value="800" selected>Normal</option><option value="400">Fast</option></select></label>
+      <span class="muted" id="liveInfo" style="margin-left:auto;font-size:12px"></span>
+      <button class="btn sm ghost" id="liveSnap">Save snapshot</button>
     </div></div>`);
-  const bg=modal(`Screen — ${esc(hostname||deviceId.slice(0,8))}`, body, null, "Close");
-  // stop polling when the modal closes
-  const mo=new MutationObserver(()=>{ if(!document.body.contains(bg)){ stop=true; mo.disconnect(); } });
+  const bg=modal(`Live screen — ${esc(hostname||deviceId.slice(0,8))}`, body, null, "Close");
+  const mo=new MutationObserver(()=>{ if(!document.body.contains(bg)){ stop=true; mo.disconnect(); api(`/api/live/${deviceId}/stop`,{method:"POST"}).catch(()=>{}); } });
   mo.observe(document.body,{childList:true});
-
-  const statusEl=()=>body.querySelector("#frameStatus");
-  const wrap=body.querySelector("#frameWrap");
-  async function requestFrame(){ try{ await api("/api/screenshots/request",{method:"POST",body:{device_id:deviceId,reason:"manual"}}); }catch(e){ if(statusEl())statusEl().textContent=e.message; } }
-  async function poll(){
-    if(stop) return;
-    try{
-      const ev=await api(`/api/screenshots?device_id=${deviceId}`);
-      if(ev.length){
-        const newest=ev[0];
-        if(newest.id!==lastSeen){
-          lastSeen=newest.id;
-          const url=await imgBlobURL(`/api/screenshots/${newest.id}/image`);
-          wrap.innerHTML=""; const im=el(`<img style="max-width:100%;border-radius:10px"/>`); im.src=url; wrap.appendChild(im);
-          wrap.appendChild(el(`<div class="muted" style="margin-top:6px;font-size:12px">Captured ${fmtDate(newest.captured_at)} · ${esc(newest.reason)}</div>`));
-        }
-      } else if(statusEl()){ statusEl().textContent="Waiting for the agent to capture…"; }
-    }catch(e){ if(statusEl())statusEl().textContent=e.message; }
-    if(!stop) setTimeout(poll, 3000);
+  const statusEl=()=>body.querySelector("#frameStatus"), wrap=body.querySelector("#frameWrap");
+  const badge=body.querySelector("#liveBadge"), info=body.querySelector("#liveInfo");
+  const img=el(`<img style="max-width:100%;max-height:72vh;border-radius:10px;display:none"/>`); wrap.appendChild(img);
+  let curURL=null;
+  const opts=()=>({quality:+body.querySelector("#liveQ").value,max_width:body.querySelector("#liveQ").value==="80"?1600:1280,
+    interval_ms:+body.querySelector("#liveS").value,monitor:0});
+  body.querySelector("#liveSnap").onclick=()=>{ if(img.src){ const a=document.createElement("a"); a.href=img.src; a.download=`${(hostname||"screen").replace(/[^A-Za-z0-9_-]+/g,"_")}_${Date.now()}.jpg`; a.click(); } };
+  // keepalive: tell the server we are watching (also carries current quality/speed)
+  async function keepalive(){ if(stop) return; try{ const r=await api(`/api/live/${deviceId}/start`,{method:"POST",body:opts()});
+      if(!r.online && statusEl()) statusEl().textContent="This computer is offline — it will stream when it reconnects."; }catch(e){ if(statusEl())statusEl().textContent=e.message; } setTimeout(keepalive, stop?0:8000); }
+  // frame loop: fetch newest JPEG as fast as the chosen speed
+  async function frames(){
+    while(!stop){
+      const t0=Date.now();
+      try{
+        const res=await fetch(API+`/api/live/${deviceId}/frame`,{headers:{Authorization:"Bearer "+S.token},cache:"no-store"});
+        if(res.status===200){
+          const age=res.headers.get("X-Frame-Age-Ms"); const tag=res.headers.get("Content-Length")+":"+age;
+          if(tag!==lastTag){ lastTag=tag; const blob=await res.blob();
+            if(curURL) URL.revokeObjectURL(curURL); curURL=URL.createObjectURL(blob); img.src=curURL;
+            img.style.display="block"; if(statusEl())statusEl().remove(); badge.style.display="block";
+            info.textContent=`${Math.round(blob.size/1024)} KB · ${age} ms behind`; }
+          fails=0;
+        } else if(res.status===204){ badge.style.display=img.src?"block":"none"; if(statusEl())statusEl().textContent="Waiting for the first frame… (the agent starts streaming within a few seconds)"; }
+        else if(res.status===401){ stop=true; }
+      }catch(e){ if(++fails>5 && statusEl()) statusEl().textContent="Connection lost — retrying…"; }
+      const wait=Math.max(250,(+body.querySelector("#liveS").value)-(Date.now()-t0));
+      await new Promise(r=>setTimeout(r,wait));
+    }
   }
-  body.querySelector("#capNow").onclick=requestFrame;
-  requestFrame(); poll();
-  // periodic auto-capture
-  (async function autoLoop(){
-    while(!stop){ await new Promise(r=>setTimeout(r,10000)); if(stop)break; if(body.querySelector("#autoCap")?.checked) requestFrame(); }
-  })();
+  keepalive(); frames();
 }
 
 function requestScreenshot(deviceId){

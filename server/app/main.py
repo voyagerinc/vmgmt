@@ -49,6 +49,8 @@ _scheduler: BackgroundScheduler | None = None
 
 
 def _maintenance_tick() -> None:
+    from .services import live_view
+    live_view.sweep()
     db = SessionLocal()
     try:
         offline = alert_engine.check_offline(db, settings.offline_after_seconds)

@@ -13,6 +13,7 @@ import os
 import platform
 import signal
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -74,6 +75,7 @@ class Agent:
         })
         self.offline_queue: deque = deque(maxlen=5000)
         self._running = True
+        self._stop_evt = threading.Event()
         self._last_software_push = 0.0
         self._last_interval_shot = 0.0
         self._activity_buf: list[dict] = []
@@ -343,10 +345,51 @@ class Agent:
         except requests.RequestException as e:
             log.warning("Interval screenshot upload failed: %s", e)
 
+    def _live_loop(self) -> None:
+        """Low-latency live screen view: poll the server; while an admin is watching, capture a
+        JPEG and upload it every `interval_ms`. Idle poll is cheap (every 3 s) so this adds almost
+        no load when nobody is watching."""
+        import collectors
+        idle_poll = 3.0
+        while self._running:
+            if not self.enrolled or not self.collection.get("screenshots", True):
+                if self._stop_evt.wait(idle_poll):
+                    return
+                continue
+            try:
+                cfg = self.session.get(f"{self.server}/api/agents/live-check",
+                                       headers=self._auth_headers(), timeout=10).json()
+            except Exception:
+                if self._stop_evt.wait(idle_poll):
+                    return
+                continue
+            if not cfg.get("active"):
+                if self._stop_evt.wait(idle_poll):
+                    return
+                continue
+            interval = max(0.3, cfg.get("interval_ms", 1000) / 1000.0)
+            while self._running and cfg.get("active"):
+                t0 = time.time()
+                data = collectors.capture_jpeg(cfg.get("quality", 45), cfg.get("max_width", 1280),
+                                               cfg.get("monitor", 0))
+                if data:
+                    try:
+                        r = self.session.post(f"{self.server}/api/agents/live-frame", data=data,
+                                               headers={**self._auth_headers(), "Content-Type": "image/jpeg"},
+                                               timeout=15)
+                        cfg["active"] = r.ok and r.json().get("active", False)
+                    except Exception:
+                        break
+                else:
+                    break
+                if self._stop_evt.wait(max(0.0, interval - (time.time() - t0))):
+                    return
+
     def run(self) -> None:
         log.info("Agent %s starting on %s", AGENT_VERSION, platform.platform())
         signal.signal(signal.SIGINT, self._stop)
         signal.signal(signal.SIGTERM, self._stop)
+        threading.Thread(target=self._live_loop, name="live", daemon=True).start()
         if self.tracker and self.state.get("tracking"):
             self.tracker.apply(self.state["tracking"])      # last known profile, before 1st heartbeat
         watch_exe = FROZEN and os.name == "nt" and _is_installed_copy()
@@ -373,6 +416,7 @@ class Agent:
     def _stop(self, *_):
         log.info("Agent stopping")
         self._running = False
+        self._stop_evt.set()
         if self.tracker:
             self.tracker.stop()
 

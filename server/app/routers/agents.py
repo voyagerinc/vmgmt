@@ -211,6 +211,26 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
     )
 
 
+@router.get("/live-check")
+def live_check(device: Device = Depends(get_agent_device)):
+    """Agent polls this often; while an admin is watching, it returns active=true + capture
+    settings so the agent streams JPEG frames to /live-frame."""
+    from ..services import live_view as lv
+    return lv.live_config(device.id)
+
+
+@router.post("/live-frame")
+async def live_frame_upload(request: Request, device: Device = Depends(get_agent_device)):
+    """Agent uploads one live JPEG frame (raw body). Kept in memory only, never stored."""
+    from ..services import live_view as lv
+    if not lv.is_wanted(device.id):
+        return {"ok": True, "active": False}        # admin stopped watching; tell the agent to pause
+    data = await request.body()
+    if data[:2] == b"\xff\xd8" and len(data) < 8_000_000:     # JPEG magic, sane size
+        lv.put_frame(device.id, data)
+    return {"ok": True, "active": lv.is_wanted(device.id)}
+
+
 @router.post("/repair-report")
 def repair_report(body: dict, device: Device = Depends(get_agent_device), db: Session = Depends(get_db)):
     """Agent Repair utility result (steps, ok) - shown in the console's Agent Repair tab."""
