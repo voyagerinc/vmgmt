@@ -54,6 +54,8 @@ class EventTracker:
         self.settings: dict = {}
         self._last_flush = 0.0
         self._threads: list[threading.Thread] = []
+        self._act_lock = threading.Lock()
+        self.activity_buf: list[dict] = []      # app/web activity, drained into each heartbeat
         try:
             self.cursor = json.loads(self.cursor_file.read_text(encoding="utf-8"))
         except Exception:
@@ -71,7 +73,8 @@ class EventTracker:
                      settings.get("wifi"), settings.get("usb_files"), settings.get("email_files"),
                      settings.get("sync_interval"))
         if not self._threads and IS_WIN:
-            for fn in (self._login_loop, self._network_loop, self._usb_loop, self._email_loop):
+            for fn in (self._login_loop, self._network_loop, self._usb_loop, self._email_loop,
+                       self._app_loop, self._web_loop):
                 t = threading.Thread(target=self._guard, args=(fn,), name=fn.__name__, daemon=True)
                 t.start()
                 self._threads.append(t)
@@ -152,6 +155,151 @@ class EventTracker:
             self.apply(resp["tracking"])
         if len(lines) > 1000:
             self._last_flush = 0                          # more to send: next tick
+
+    # ------------------------------------------------------------------ app / web activity
+    def take_activity(self) -> list[dict]:
+        """Everything collected so far, including the part of the app/idle segment still in
+        progress (it is split here, so reports are never more than one heartbeat behind)."""
+        with self._act_lock:
+            seg = getattr(self, "_seg", None)
+            if seg and seg[4] >= 1:
+                self.activity_buf.append(self._seg_item(seg))
+                seg[3], seg[4] = seg[3] + seg[4], 0.0          # continue the same window from here
+            items, self.activity_buf = self.activity_buf, []
+        return items
+
+    @staticmethod
+    def _seg_item(seg) -> dict:
+        app, title = seg[1], seg[2]
+        return {"event_type": "idle" if app == "(idle)" else "app",
+                "application": None if app == "(idle)" else app,
+                "title": (title or "")[:400], "duration_seconds": int(seg[4]),
+                "ts": datetime.fromtimestamp(seg[3], timezone.utc).isoformat()}
+
+    def _add_activity(self, item: dict) -> None:
+        with self._act_lock:
+            if len(self.activity_buf) < 20000:           # bounded if the server is unreachable
+                self.activity_buf.append(item)
+
+    def _app_loop(self) -> None:
+        """Time spent per application/window: sample the foreground window every 5 s and emit a
+        segment with its real duration when it changes (max 5 min per segment). Time with no
+        keyboard/mouse input for 2 min is reported as idle, not as app usage."""
+        import collectors
+        self._seg = None                                   # [key, app, title, start_ts, seconds]
+        last = time.time()
+
+        def close():
+            with self._act_lock:
+                if self._seg and self._seg[4] >= 1 and len(self.activity_buf) < 20000:
+                    self.activity_buf.append(self._seg_item(self._seg))
+                self._seg = None
+
+        while not self._stop.wait(5):
+            now = time.time()
+            step, last = min(now - last, 30), now          # never credit a sleep gap
+            if not self._on("app_activity"):
+                close()
+                continue
+            idle = collectors.idle_seconds() or 0
+            if idle >= 120:
+                key, app, title = ("(idle)",), "(idle)", ""
+            else:
+                aw = collectors.active_window() or {}
+                app = (aw.get("application") or "unknown").lower()
+                title = aw.get("title") or ""
+                key = (app, title)
+            seg = self._seg
+            if seg and (seg[0] != key or seg[4] >= 300):
+                close()
+            with self._act_lock:
+                if self._seg is None:
+                    self._seg = [key, app, title, now - step, 0.0]
+                self._seg[4] += step
+
+    _CHROMIUM = {"chrome": r"Google\Chrome\User Data", "edge": r"Microsoft\Edge\User Data",
+                 "brave": r"BraveSoftware\Brave-Browser\User Data", "vivaldi": r"Vivaldi\User Data",
+                 "opera": r"Opera Software\Opera Stable"}
+
+    def _web_loop(self) -> None:
+        """Websites visited, from the browsers' own history databases (Chrome, Edge, Brave,
+        Vivaldi, Opera, Firefox). Read every minute from a copy (the live file is locked).
+        URLs are stored without query string/fragment (tokens, personal data)."""
+        while not self._stop.wait(60):
+            if not self._on("web_activity"):
+                continue
+            local = os.environ.get("LOCALAPPDATA", "")
+            roaming = os.environ.get("APPDATA", "")
+            for browser, rel in self._CHROMIUM.items():
+                root = Path(roaming if browser == "opera" else local) / rel
+                if not root.exists():
+                    continue
+                dbs = [root / "History"] if browser == "opera" else \
+                    [p / "History" for p in root.iterdir() if p.is_dir() and
+                     (p.name == "Default" or p.name.startswith("Profile "))]
+                for db in dbs:
+                    if db.exists():
+                        self._read_history(browser, db, chromium=True)
+            ff = Path(roaming) / "Mozilla" / "Firefox" / "Profiles"
+            if ff.exists():
+                for prof in ff.iterdir():
+                    db = prof / "places.sqlite"
+                    if db.exists():
+                        self._read_history("firefox", db, chromium=False)
+
+    def _read_history(self, browser: str, db: Path, chromium: bool) -> None:
+        import shutil
+        import sqlite3
+        import tempfile
+        from urllib.parse import urlsplit, urlunsplit
+        key = f"web:{db}"
+        last = self.cursor.get(key)
+        tmp = Path(tempfile.gettempdir()) / f"voyager_hist_{os.getpid()}.db"
+        try:
+            shutil.copy2(db, tmp)
+            con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+            try:
+                if chromium:     # visit_time: microseconds since 1601-01-01; visit_duration: microseconds
+                    q = ("SELECT v.visit_time, u.url, u.title, v.visit_duration FROM visits v "
+                         "JOIN urls u ON u.id = v.url WHERE v.visit_time > ? ORDER BY v.visit_time LIMIT 2000")
+                else:            # Firefox visit_date: microseconds since 1970
+                    q = ("SELECT v.visit_date, p.url, p.title, 0 FROM moz_historyvisits v "
+                         "JOIN moz_places p ON p.id = v.place_id WHERE v.visit_date > ? ORDER BY v.visit_date LIMIT 2000")
+                if last is None:  # first run: start from now, no back-fill of old history
+                    row = con.execute("SELECT MAX(visit_time) FROM visits" if chromium
+                                      else "SELECT MAX(visit_date) FROM moz_historyvisits").fetchone()
+                    self.cursor[key] = (row[0] if row else 0) or 0
+                    self._save_cursor()
+                    return
+                rows = con.execute(q, (last,)).fetchall()
+            finally:
+                con.close()
+        except Exception as e:
+            log.debug("History read %s: %s", db, e)
+            return
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        newest = last
+        for t, url, title, dur in rows:
+            newest = max(newest, t)
+            if not url or not url.startswith(("http://", "https://")):
+                continue
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+            if host.startswith("www."):
+                host = host[4:]
+            secs = (t / 1e6 - 11644473600) if chromium else t / 1e6
+            self._add_activity({"event_type": "web", "domain": host, "application": browser,
+                                "title": (title or "")[:400],
+                                "duration_seconds": int((dur or 0) / 1e6),
+                                "ts": datetime.fromtimestamp(secs, timezone.utc).isoformat(),
+                                "meta": {"url": urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))[:500]}})
+        if newest != last:
+            self.cursor[key] = newest
+            self._save_cursor()
 
     # ------------------------------------------------------------------ logins
     def _login_loop(self) -> None:

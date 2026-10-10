@@ -21,7 +21,7 @@ import requests
 
 import collectors
 
-__version__ = "4.3.0"
+__version__ = "4.4.0"
 
 
 def _stamped_version() -> str:
@@ -156,7 +156,10 @@ class Agent:
             if idle is not None:
                 body["health"].setdefault("extra", {})["idle_seconds"] = idle
                 body["health"]["extra"]["active"] = idle < 60
-        if self.collection.get("activity", False):
+        trk = self.tracker.settings if self.tracker else {}
+        if self.tracker and (trk.get("app_activity") or trk.get("web_activity")):
+            body["activity"].extend(self.tracker.take_activity())   # timed app segments + web visits
+        elif self.collection.get("activity", False):
             aw = collectors.active_window()
             if aw:
                 body["activity"].append(aw)

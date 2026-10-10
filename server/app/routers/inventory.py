@@ -67,6 +67,36 @@ def activity(tenant_id: str | None = Query(None), device_id: str | None = None,
              "duration": e.duration_seconds} for e in rows]
 
 
+@router.get("/activity/summary")
+def activity_summary(tenant_id: str | None = Query(None), device_id: str | None = None,
+                     date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
+                     hours: int = 24, db: Session = Depends(get_db),
+                     user: AdminUser = Depends(get_current_user)):
+    """Computer-wise activity: per computer app/web/idle time, top app/site + overall top lists."""
+    from ..services import activity_report as ar
+    tid = resolve_tenant(user, tenant_id)
+    start, end = ar.window(date_from, date_to, tz_offset, hours)
+    comps = ar.computer_summary(db, tid, start, end, device_id)
+    return {"from": start, "to": end, "computers": comps,
+            "top_apps": ar.top(db, tid, "application", start, end, device_id),
+            "top_sites": ar.top(db, tid, "domain", start, end, device_id),
+            "totals": {k: sum(c[k] for c in comps) for k in ("app_seconds", "web_seconds", "idle_seconds", "web_visits")}}
+
+
+@router.get("/activity/events")
+def activity_events(tenant_id: str | None = Query(None), device_id: str | None = None,
+                    date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
+                    hours: int = 24, kind: str | None = None, q: str | None = None,
+                    limit: int = Query(200, le=1000), offset: int = 0,
+                    db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
+    """Detailed activity (apps, websites, idle) with computer names, filters and paging."""
+    from ..services import activity_report as ar
+    tid = resolve_tenant(user, tenant_id)
+    start, end = ar.window(date_from, date_to, tz_offset, hours)
+    total, rows = ar.events(db, tid, start, end, device_id, kind, q, limit, offset)
+    return {"total": total, "events": rows}
+
+
 @router.get("/activity/top")
 def activity_top(tenant_id: str | None = Query(None), by: str = "application", hours: int = 24,
                  db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):

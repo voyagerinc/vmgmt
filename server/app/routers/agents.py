@@ -132,8 +132,9 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         ))
         alert_engine.process_health(db, tid, device, h.model_dump())
 
-    # ---- activity (per-agent profile) ----
-    if prof.get("activity", False):
+    # ---- activity: per-agent profile, or app/web activity on in the tracking profile ----
+    tset = trk.normalize_settings(trk.effective_profile(db, device).settings)
+    if prof.get("activity", False) or tset["app_activity"] or tset["web_activity"]:
         for a in body.activity:
             db.add(ActivityEvent(
                 tenant_id=tid, device_id=device.id, event_type=a.event_type, application=a.application,

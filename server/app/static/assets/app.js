@@ -497,20 +497,115 @@ VIEWS.software = async (main) => {
   search.oninput=debounce(load,300); sel.onchange=load; load();
 };
 
+/* ---------------- period + computer filter shared by Activity and Reports ---------------- */
+const ymd=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const fmtHM=(s)=>{ s=Math.round(s||0); const h=Math.floor(s/3600), m=Math.floor(s%3600/60); return h?`${h}h ${String(m).padStart(2,"0")}m`:(m?`${m}m`:`${s}s`); };
+function filterBar(devs, onApply, opts={}){
+  const st=Object.assign({device_id:"",period:"today",from:"",to:""}, S.actFilter||{});
+  const f=el(`<div class="card" style="margin-bottom:14px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <div class="field" style="margin:0;min-width:200px"><label>Computer</label><select data-f="device_id"><option value="">All computers</option>
+      ${devs.map(d=>`<option value="${d.id}" ${d.id===st.device_id?"selected":""}>${esc(d.hostname)}</option>`).join("")}</select></div>
+    <div class="field" style="margin:0"><label>Period</label><select data-f="period">
+      ${[["today","Today"],["yesterday","Yesterday"],["7","Last 7 days"],["30","Last 30 days"],["custom","Custom…"]].map(([v,t])=>`<option value="${v}" ${v===st.period?"selected":""}>${t}</option>`).join("")}</select></div>
+    <div class="field" style="margin:0" data-c><label>From</label><input type="date" data-f="from" value="${st.from}"/></div>
+    <div class="field" style="margin:0" data-c><label>To</label><input type="date" data-f="to" value="${st.to}"/></div>
+    <button class="btn">Apply</button>${opts.extra||""}</div></div>`);
+  const sel=(k)=>f.querySelector(`[data-f="${k}"]`);
+  const showCustom=()=>f.querySelectorAll("[data-c]").forEach(x=>x.style.display=sel("period").value==="custom"?"":"none");
+  showCustom(); sel("period").onchange=showCustom;
+  const values=()=>{
+    const p=sel("period").value, now=new Date(); let from, to;
+    if(p==="today"){ from=to=ymd(now); }
+    else if(p==="yesterday"){ const y=new Date(now); y.setDate(y.getDate()-1); from=to=ymd(y); }
+    else if(p==="custom"){ from=sel("from").value; to=sel("to").value||sel("from").value; }
+    else { const s=new Date(now); s.setDate(s.getDate()-(+p-1)); from=ymd(s); to=ymd(now); }
+    S.actFilter={device_id:sel("device_id").value,period:p,from:sel("from").value,to:sel("to").value};
+    return {device_id:sel("device_id").value,date_from:from,date_to:to,tz_offset:new Date().getTimezoneOffset()};
+  };
+  f.querySelector(".btn").onclick=()=>onApply(values());
+  f.values=values; f.setDevice=(id)=>{ sel("device_id").value=id; onApply(values()); };
+  return f;
+}
+function exportButtons(kind, label, params){
+  const box=el(`<span style="display:inline-flex;gap:6px;align-items:center"><span class="muted" style="font-size:12px">${esc(label)}:</span></span>`);
+  ["csv","xlsx","pdf"].forEach(fmt=>{ const b=el(`<button class="btn sm ghost">${fmt.toUpperCase()}</button>`);
+    b.onclick=()=>downloadWithAuth(`/api/reports/${kind}`+qp({...params(),fmt}),`${kind}.${fmt}`); box.appendChild(b); });
+  return box;
+}
+
 VIEWS.activity = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Web / Application Activity"));
-  const top=await api("/api/activity/top"+qp({by:"application",hours:24}));
-  const topDom=await api("/api/activity/top"+qp({by:"domain",hours:24}));
-  const grid=el(`<div class="grid" style="grid-template-columns:1fr 1fr"></div>`);
-  grid.appendChild(cardTable("Top applications (24h)",["App","Duration","Events"],
-    top.map(t=>[esc(t.name),fmtDur(t.duration_seconds),t.events])));
-  grid.appendChild(cardTable("Top sites (24h)",["Domain","Duration","Events"],
-    topDom.map(t=>[esc(t.name),fmtDur(t.duration_seconds),t.events])));
-  main.appendChild(grid);
-  const recent=await api("/api/activity"+qp({hours:24}));
-  main.appendChild(cardTable("Recent events",["When","Device","Type","App / Site","Title"],
-    recent.slice(0,100).map(e=>[fmtDate(e.ts),esc(e.device_id.slice(0,8)),esc(e.type),esc(e.app||e.domain||"—"),esc((e.title||"").slice(0,60))])));
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
+  let params={};
+  const bar=filterBar(devs,(p)=>{ params=p; load(); });
+  const exp=el(`<div class="toolbar" style="margin:-4px 0 14px;gap:14px;flex-wrap:wrap"></div>`);
+  exp.append(exportButtons("computer_summary","Computer-wise summary",()=>params),
+             exportButtons("activity","Detailed activity",()=>params),
+             exportButtons("app_usage","Apps by computer",()=>params),
+             exportButtons("web_usage","Websites by computer",()=>params));
+  const body=el(`<div></div>`);
+  main.append(bar,exp,body);
+  const load=async()=>{
+    body.innerHTML=`<div class="muted">Loading…</div>`;
+    const r=await api("/api/activity/summary"+qp(params));
+    body.innerHTML="";
+    const one=params.device_id&&devs.find(d=>d.id===params.device_id);
+    if(!r.computers.length){
+      body.appendChild(el(`<div class="notice">No activity for ${one?`<b>${esc(one.hostname)}</b>`:"any computer"} in this period.
+        Activity is collected only when <b>App activity</b> / <b>Web activity</b> is on in the computer's
+        <a href="#tracking/profiles">tracking profile</a> (agent 4.4 or newer).</div>`)); return; }
+    const t=r.totals;
+    const k=el(`<div class="grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:14px"></div>`);
+    [["Application time",fmtHM(t.app_seconds),"#60a5fa"],["Website time",fmtHM(t.web_seconds),"#34d399"],
+     ["Idle time",fmtHM(t.idle_seconds),"#94a3b8"],["Website visits",t.web_visits,"#f472b6"],
+     [one?"Computer":"Active computers",one?esc(one.hostname):r.computers.length,"#f59e0b"]]
+      .forEach(([l,v,c])=>k.appendChild(el(`<div class="card" style="border-left:4px solid ${c}"><div class="muted" style="font-size:12px">${l}</div><div style="font-size:24px;font-weight:700">${v}</div></div>`)));
+    body.appendChild(k);
+    if(!one){
+      const ct=cardTable("By computer",["Computer","Employee","App time","Web time","Idle","Top application","Top website","Visits","Last activity",""],
+        r.computers.map(c=>[`<b>${esc(c.hostname)}</b>`,esc(c.employee||"—"),fmtHM(c.app_seconds),fmtHM(c.web_seconds),fmtHM(c.idle_seconds),
+          esc(c.top_app||"—"),esc(c.top_site||"—"),c.web_visits,fmtUtc(c.last),`<button class="btn sm ghost" data-dev="${c.device_id}">Details</button>`]));
+      ct.querySelectorAll("[data-dev]").forEach(b=>b.onclick=()=>bar.setDevice(b.dataset.dev));
+      body.appendChild(ct);
+    }
+    const bars=(rows)=>{ const max=Math.max(1,...rows.map(x=>x.seconds));
+      return rows.map(x=>[esc(x.name),`<div style="display:flex;align-items:center;gap:8px"><div style="height:8px;border-radius:4px;background:#60a5fa;width:${Math.max(2,Math.round(x.seconds/max*140))}px"></div>${fmtHM(x.seconds)}</div>`,x.events,one?"":x.computers]); };
+    const g=el(`<div class="grid" style="grid-template-columns:1fr 1fr;margin:14px 0"></div>`);
+    g.appendChild(cardTable(`Top applications${one?" — "+one.hostname:""}`,["Application","Time","Events",one?"":"Computers"],bars(r.top_apps)));
+    g.appendChild(cardTable(`Top websites${one?" — "+one.hostname:""}`,["Website","Time","Visits",one?"":"Computers"],bars(r.top_sites)));
+    body.appendChild(g);
+    // detailed events with type filter, search and paging
+    const det=el(`<div class="card"><div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px">
+      <h3 style="margin:0;flex:1">Detailed activity${one?" — "+esc(one.hostname):""}</h3>
+      <select data-k><option value="">All</option><option value="app">Applications</option><option value="web">Websites</option><option value="idle">Idle</option></select>
+      <input data-q placeholder="Search app, website, title" style="min-width:220px"/><button class="btn sm">Search</button></div><div data-list></div>
+      <button class="btn sm ghost" data-more style="margin-top:10px;display:none">Load more</button></div>`);
+    body.appendChild(det);
+    let offset=0;
+    const list=det.querySelector("[data-list]"), more=det.querySelector("[data-more]");
+    const loadEv=async(reset)=>{
+      if(reset){ offset=0; list.innerHTML=""; }
+      const ev=await api("/api/activity/events"+qp({...params,kind:det.querySelector("[data-k]").value,q:det.querySelector("[data-q]").value.trim(),limit:200,offset}));
+      if(reset){ list.innerHTML=`<div class="muted" style="margin-bottom:6px">${ev.total} event(s)</div>`;
+        list.appendChild(tableFrom(["When","Computer","Type","Application / Website","Title","Duration"],[])); }
+      const tb=list.querySelector("tbody");
+      if(reset && ev.events.length) tb.innerHTML="";          // drop the "No data" placeholder
+      ev.events.forEach(e=>{ const tr=document.createElement("tr");
+        tr.innerHTML=`<td>${fmtUtc(e.ts)}</td><td>${esc(e.hostname)}</td><td>${e.type==="web"?'<span class="badge b-ok">web</span>':e.type==="idle"?'<span class="badge b-off">idle</span>':'<span class="badge b-pending">app</span>'}</td>
+          <td>${esc(e.domain||e.app||"—")}${e.url?`<div class="muted" style="font-size:11px;word-break:break-all">${esc(e.url)}</div>`:""}</td><td>${esc((e.title||"").slice(0,120))}</td><td>${fmtHM(e.seconds)}</td>`;
+        tb.appendChild(tr); });
+      offset+=ev.events.length; more.style.display=offset<ev.total?"":"none";
+    };
+    det.querySelector(".btn.sm:not([data-more])").onclick=()=>loadEv(true).catch(e=>toast(e.message,true));
+    det.querySelector("[data-q]").addEventListener("keydown",e=>{ if(e.key==="Enter") loadEv(true); });
+    det.querySelector("[data-k]").onchange=()=>loadEv(true);
+    more.onclick=()=>loadEv(false).catch(e=>toast(e.message,true));
+    await loadEv(true);
+  };
+  params=bar.values();
+  await load();
 };
+
 const fmtDur=(s)=>{ s=s||0; if(s<60)return s+"s"; if(s<3600)return Math.floor(s/60)+"m"; return (s/3600).toFixed(1)+"h"; };
 
 /* ---------------- Tracking: logins, network/Wi-Fi, USB and email file events + profiles ---------------- */
@@ -580,10 +675,10 @@ async function trackingProfiles(main){
   head.appendChild(add); main.appendChild(head);
   const on=(v)=>v?`<span class="badge b-ok">on</span>`:`<span class="badge b-off">off</span>`;
   const pc=el(`<div class="card" style="margin-bottom:16px"></div>`);
-  pc.appendChild(tableFrom(["Profile","Logins","Network","Wi-Fi","USB files","Email files","File types","Sync every","Computers","Actions"],
+  pc.appendChild(tableFrom(["Profile","Logins","Network","Wi-Fi","USB files","Email files","Apps","Web","File types","Sync every","Computers","Actions"],
     r.profiles.map(p=>{ const s=p.settings;
       return [`<b>${esc(p.name)}</b>${p.is_default?' <span class="badge b-ok">default</span>':""}${p.description?`<div class="muted" style="font-size:11px">${esc(p.description)}</div>`:""}`,
-        on(s.logins),on(s.network),on(s.wifi),on(s.usb_files),on(s.email_files),
+        on(s.logins),on(s.network),on(s.wifi),on(s.usb_files),on(s.email_files),on(s.app_activity),on(s.web_activity),
         `<span class="muted" style="font-size:12px">${esc((s.file_types||[]).join(" "))}</span>`,
         esc((TRK_SYNC.find(x=>x[0]===s.sync_interval)||[0,s.sync_interval+" s"])[1]),p.devices,
         `<button class="btn sm ghost" data-ed="${p.id}">Edit</button> <button class="btn sm ghost" data-as="${p.id}">Assign computers</button>`+
@@ -608,7 +703,7 @@ function editTrackingProfile(p, defaults, main){
     <div class="field"><label>Trackers</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px">
       ${[["logins","Logins — logon/logoff, lock/unlock, startup/shutdown, sleep/wake"],["network","Network — adapters, IP changes, internet lost/restored"],
          ["wifi","Wi-Fi — connected/disconnected, network name, signal"],["usb_files","USB — drives inserted/removed, tracked files copied to/from USB"],
-         ["email_files","Email — tracked files sent from Outlook, or attached in webmail (best effort)"],["alert_on_transfer","Raise an alert when a tracked file leaves by USB or email"]]
+         ["email_files","Email — tracked files sent from Outlook, or attached in webmail (best effort)"],["app_activity","App activity — time spent per application/window (idle excluded)"],["web_activity","Web activity — websites visited (Chrome, Edge, Firefox…; URLs without query string)"],["alert_on_transfer","Raise an alert when a tracked file leaves by USB or email"]]
         .map(([k,t])=>`<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" data-k="${k}" ${s[k]?"checked":""}/> <span>${esc(t)}</span></label>`).join("")}</div></div>
     <div class="field"><label>Tracked file types (used by USB and email tracking)</label><input id="pt" value="${esc((s.file_types||[]).join(", "))}"/>
       <div class="muted" style="font-size:11px">Comma-separated, e.g. .xlsx, .pdf, .docx, .zip</div></div>
@@ -721,16 +816,33 @@ VIEWS.remote = async (main) => {
 
 VIEWS.reports = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Reports"));
-  const kinds=[["devices","Device inventory"],["assets","Asset report"],["software","Software report"],
-    ["alerts","Alert report"],["employees","Employee / device report"],["license","License report"]];
-  const grid=el(`<div class="grid kpis"></div>`);
-  kinds.forEach(([k,label])=>{
-    const card=el(`<div class="card"><h3 style="margin:0 0 10px">${esc(label)}</h3></div>`);
-    const row=el(`<div class="toolbar"></div>`);
-    ["csv","xlsx","pdf"].forEach(fmt=>{ const b=el(`<a class="btn sm ghost" href="/api/reports/${k}?fmt=${fmt}${tenantParam()?"&tenant_id="+tenantParam():""}">${fmt.toUpperCase()}</a>`); row.appendChild(b); });
-    card.appendChild(row); grid.appendChild(card);
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
+  let params={};
+  const bar=filterBar(devs,(p)=>{ params=p; toast(p.device_id?"Reports limited to the selected computer":"Reports for all computers"); });
+  main.appendChild(bar);
+  main.appendChild(el(`<div class="muted" style="margin:-6px 0 12px">Every report below uses the computer and period selected here (Apply first). Inventory reports (devices, software) ignore the period.</div>`));
+  const groups=[
+    ["Computer-wise", [["computer_summary","Computer-wise summary","App/web/idle time, top app & website, logons, USB & email file events, alerts — one row per computer"],
+                       ["activity","Activity (detailed)","Every application window and website visit with time and duration"],
+                       ["app_usage","Application usage by computer","Time per application on each computer"],
+                       ["web_usage","Website usage by computer","Time and visits per website on each computer"],
+                       ["tracking","Logins, network, USB & email","Logon/logoff, Wi-Fi/network changes, USB and email file events"]]],
+    ["Inventory & security", [["devices","Device inventory",""],["software","Software by computer",""],["alerts","Alerts",""],
+                       ["assets","Assets",""],["employees","Employees",""],["license","License",""]]],
+  ];
+  groups.forEach(([gname,kinds])=>{
+    main.appendChild(el(`<h3 style="margin:16px 0 8px">${esc(gname)}</h3>`));
+    const grid=el(`<div class="grid kpis"></div>`);
+    kinds.forEach(([k,label,desc])=>{
+      const card=el(`<div class="card"><h3 style="margin:0 0 4px">${esc(label)}</h3>${desc?`<div class="muted" style="font-size:12px;margin-bottom:10px">${esc(desc)}</div>`:""}</div>`);
+      const row=el(`<div class="toolbar"></div>`);
+      ["csv","xlsx","pdf"].forEach(fmt=>{ const b=el(`<button class="btn sm ghost">${fmt.toUpperCase()}</button>`);
+        b.onclick=()=>downloadWithAuth(`/api/reports/${k}`+qp({...params,fmt}),`${k}.${fmt}`); row.appendChild(b); });
+      card.appendChild(row); grid.appendChild(card);
+    });
+    main.appendChild(grid);
   });
-  main.appendChild(grid);
+  params=bar.values();
 };
 
 VIEWS.downloads = async (main) => {

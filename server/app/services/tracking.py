@@ -22,6 +22,8 @@ DEFAULT_SETTINGS = {
     "wifi": True,            # Wi-Fi connect/disconnect/network (SSID) change + signal
     "usb_files": False,      # tracked files copied to / from USB drives (+ insert/remove)
     "email_files": False,    # tracked files sent from Outlook / attached in webmail (best effort)
+    "app_activity": False,   # time spent per application/window (idle excluded)
+    "web_activity": False,   # websites visited (browser history; URLs without query string)
     "file_types": DEFAULT_FILE_TYPES,
     "sync_interval": 300,    # seconds between event uploads
     "alert_on_transfer": True,   # raise an alert for tracked files leaving via USB/email
@@ -36,7 +38,8 @@ def normalize_settings(raw: dict | None, base: dict | None = None) -> dict:
     """Merge + validate profile settings (unknown keys dropped)."""
     out = dict(base or DEFAULT_SETTINGS)
     raw = raw or {}
-    for k in ("logins", "network", "wifi", "usb_files", "email_files", "alert_on_transfer"):
+    for k in ("logins", "network", "wifi", "usb_files", "email_files", "alert_on_transfer",
+              "app_activity", "web_activity"):
         if k in raw:
             out[k] = bool(raw[k])
     if "file_types" in raw:
