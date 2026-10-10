@@ -51,7 +51,8 @@ def dashboard(tenant_id: str | None = Query(None), db: Session = Depends(get_db)
                     "expiry": lic.expiry_date, "max_devices": lic.max_devices,
                     "used_devices": total,
                     "days_left": (lic.expiry_date.replace(tzinfo=timezone.utc)
-                                  - datetime.now(timezone.utc)).days}
+                                  - datetime.now(timezone.utc)).days,
+                    "profile_name": lic.profile_name}
     return {
         "devices": {"total": total, "online": online, "offline": offline, "pending": pending},
         "alerts_open": open_alerts,

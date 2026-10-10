@@ -27,6 +27,7 @@ from .routers import (
     downloads,
     evidence,
     inventory,
+    license_profiles,
     policies,
     portal,
     reports,
@@ -35,7 +36,7 @@ from .routers import (
     tracking as tracking_router,
     users,
 )
-from .services import alert_engine, license_sync, retention, scheduled_reports
+from .services import alert_engine, license_service as lic_svc, license_sync, retention, scheduled_reports
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,6 +138,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_bootstrap(db)
+        lic_svc.ensure_system_profiles(db)
         _record_build_version(db)
     finally:
         db.close()
@@ -187,7 +189,8 @@ async def security_headers(request: Request, call_next):
 
 # API routers
 for r in (auth, portal, users, agents, devices, directory, inventory, policies, alerts,
-          evidence, reports, settings_router, downloads, system_router, tracking_router, agent_updates, deploy):
+          evidence, reports, settings_router, downloads, system_router, tracking_router, agent_updates, deploy,
+          license_profiles):
     app.include_router(r.router)
 
 

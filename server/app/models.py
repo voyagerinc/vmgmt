@@ -160,6 +160,7 @@ class License(Base):
     max_admins: Mapped[int] = mapped_column(Integer, default=3)
     max_storage_mb: Mapped[int] = mapped_column(Integer, default=10240)
     branch_name: Mapped[str | None] = mapped_column(String(120))   # None = main office
+    profile_name: Mapped[str | None] = mapped_column(String(80))    # license-type label (from LicenseProfile)
     features: Mapped[dict] = mapped_column(JSON, default=dict)     # module entitlements
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     grace_days: Mapped[int] = mapped_column(Integer, default=7)
@@ -560,6 +561,25 @@ class Setting(Base):
     tenant_id: Mapped[str | None] = mapped_column(index=True)   # None = global/platform
     key: Mapped[str] = mapped_column(String(60), index=True)
     value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LicenseProfile(Base):
+    """A reusable license type defined on the license server (Standard, Professional, custom...):
+    its included features, default device/admin limits and term. Picked when creating a customer
+    or license, and switchable on an existing license."""
+    __tablename__ = "license_profiles"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str | None] = mapped_column(Text)
+    edition: Mapped[str] = mapped_column(String(20), default="custom")   # coarse label
+    features: Mapped[dict] = mapped_column(JSON, default=dict)
+    default_max_devices: Mapped[int] = mapped_column(Integer, default=25)
+    default_max_admins: Mapped[int] = mapped_column(Integer, default=3)
+    default_term_days: Mapped[int] = mapped_column(Integer, default=365)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)      # seeded, cannot be deleted
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

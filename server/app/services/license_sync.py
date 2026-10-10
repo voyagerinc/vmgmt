@@ -74,6 +74,16 @@ def run_client_sync(db: Session) -> dict:
             changed.append("branch_name")
         if info.get("features"):
             lic.features = info["features"]
+        if "edition" in info and info["edition"] and lic.edition.value != info["edition"]:
+            try:
+                from ..models import LicenseEdition
+                lic.edition = LicenseEdition(info["edition"])
+                changed.append("edition")
+            except Exception:
+                pass
+        if "profile_name" in info and lic.profile_name != info["profile_name"]:
+            lic.profile_name = info["profile_name"]
+            changed.append("profile_name")
         new_status = info.get("status")
         if new_status == "revoked":
             lic.status = LicenseStatus.REVOKED

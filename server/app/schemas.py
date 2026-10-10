@@ -71,6 +71,8 @@ class TenantOut(ORM):
 
 class LicenseIn(BaseModel):
     branch_name: str | None = None          # required when the company already has a license
+    profile_id: str | None = None           # license type; fills features + default limits
+    profile_name: str | None = None
     edition: LicenseEdition = LicenseEdition.STANDARD
     license_type: LicenseType = LicenseType.SUBSCRIPTION_MONTHLY
     term_days: int = 365
@@ -97,6 +99,7 @@ class LicenseOut(ORM):
     is_demo: bool
     branch_name: str | None = None
     activated_server_id: str | None = None
+    profile_name: str | None = None
 
 
 class LicenseUpdateIn(BaseModel):
@@ -105,6 +108,11 @@ class LicenseUpdateIn(BaseModel):
     max_admins: int | None = None
     extend_days: int = 0
     branch_name: str | None = None
+    profile_id: str | None = None           # switch the license type (features + edition label)
+    profile_name: str | None = None
+    edition: LicenseEdition | None = None
+    license_type: LicenseType | None = None
+    features: dict[str, bool] | None = None
 
 
 class LicensePackageOut(BaseModel):
@@ -115,6 +123,7 @@ class LicensePackageOut(BaseModel):
     server_hint: str
     branch_name: str | None = None
     download_url: str | None = None
+    profile_name: str | None = None
 
 
 class ActivateIn(BaseModel):
@@ -136,6 +145,8 @@ class ProvisionIn(BaseModel):
     owner_name: str = "Account Owner"
     owner_password: str | None = None        # auto-generated if omitted
     # license
+    profile_id: str | None = None             # license type; fills features + default limits
+    profile_name: str | None = None
     edition: LicenseEdition = LicenseEdition.STANDARD
     license_type: LicenseType = LicenseType.SUBSCRIPTION_MONTHLY
     term_days: int = 365
@@ -156,6 +167,8 @@ class ProvisionOut(BaseModel):
     max_devices: int
     download_url: str                       # GET endpoint for the .lic file
     email_status: str                       # delivered | outbox | skipped
+    profile_name: str | None = None
+    edition: str | None = None
 
 
 # --------------------------------------------------------------- users

@@ -162,7 +162,7 @@ function renderShell(){
   const nav=el(`<div class="nav"></div>`);
 
   const items = isPlatform
-    ? [["licenses","Licenses & Tenants","🔑"],["downloads","Server Downloads","⬇"],["audit","Audit Logs","❏"],["settings","Settings","⋯"]]
+    ? [["licenses","Licenses & Tenants","🔑"],["license_profiles","License Types","🏷"],["downloads","Server Downloads","⬇"],["audit","Audit Logs","❏"],["settings","Settings","⋯"]]
     : NAV.filter(([k])=>!["licenses"].includes(k));
 
   items.forEach(([k,label,icon])=>{ nav.appendChild(el(`<a href="#${k}" data-k="${k}"><span>${icon}</span>${esc(label)}</a>`)); });
@@ -186,7 +186,7 @@ async function route(){
   const k=(location.hash.replace("#","")||"dashboard").split("/")[0];
   setActive(k);
   const main=document.getElementById("main"); if(!main){ renderShell(); return; }
-  const need = S.role==="platform_super_admin" && !S.activeTenant && !["dashboard","licenses","audit","settings","downloads"].includes(k);
+  const need = S.role==="platform_super_admin" && !S.activeTenant && !["dashboard","licenses","license_profiles","audit","settings","downloads"].includes(k);
   try{
     // License activation gate for company users (PRD §8: inactive until attached to a server).
     if(S.role!=="platform_super_admin" && !["activate","settings"].includes(k)){
@@ -360,7 +360,7 @@ VIEWS.dashboard = async (main) => {
   k.appendChild(kpi(d.software_distinct,"Distinct software"));
   k.appendChild(kpi(d.evidence,"Evidence items"));
   if(d.license){ const L=d.license;
-    k.appendChild(kpi(L.days_left+"d","License",`${esc(L.edition)} · ${esc(L.status)} · ${L.used_devices}/${L.max_devices} seats`)); }
+    k.appendChild(kpi(L.days_left+"d","License",`${esc(L.profile_name || L.edition)} · ${esc(L.status)} · ${L.used_devices}/${L.max_devices} seats`)); }
   main.appendChild(k);
 
   // ---- interactive charts (PRD §2.7 / §3.3) ----
@@ -1153,22 +1153,205 @@ VIEWS.downloads = async (main) => {
   main.appendChild(grid);
 };
 
-VIEWS.licenses = async (main) => {
-  main.innerHTML="";
+VIEWS.license_profiles = async (main) => {
+  await licenseProfilesView(main);
+};
+
+VIEWS.licenses = async (main, args) => {
   const isPlatform=S.role==="platform_super_admin";
+  const sub = (args && args[0]) || (location.hash.split("/")[1] || "tenants");
+  if(isPlatform && sub === "profiles"){
+    return licenseProfilesView(main);
+  }
+  main.innerHTML="";
   const tools=[];
   if(isPlatform){
     const b=el(`<button class="btn sm">+ Customer</button>`); b.onclick=()=>addTenant(main); tools.push(b);
+    const lp=el(`<a class="btn sm ghost" href="#licenses/profiles">🏷 License Types</a>`); tools.push(lp);
     const dlSrv=el(`<button class="btn sm ghost">⬇ Download Client Server Setup</button>`); dlSrv.onclick=()=>downloadWithAuth("/api/download/server","Server_Setup.exe"); tools.push(dlSrv);
     const dlUni=el(`<button class="btn sm ghost">⬇ Universal Zip (Server 2012+)</button>`); dlUni.onclick=()=>downloadWithAuth("/api/download/server-bundle","EndpointManagementServer-Universal-Windows.zip"); tools.push(dlUni);
     const a=el(`<button class="btn sm">🔑 Activate with .lic file</button>`); a.onclick=()=>activateOnline(main); tools.push(a);
   }
   main.appendChild(topbar("Licenses & Tenants",tools));
+  if(isPlatform){
+    main.appendChild(el(`<div class="toolbar" style="margin-bottom:14px;gap:6px">
+      <a class="btn sm" href="#licenses">Tenants &amp; Customer Licenses</a>
+      <a class="btn sm ghost" href="#licenses/profiles">🏷 License Types &amp; Profiles</a>
+    </div>`));
+  }
   const tenants=await api("/api/tenants");
   const c=el(`<div class="card"></div>`);
   c.appendChild(renderTenantTable(tenants));
   main.appendChild(c);
 };
+
+async function licenseProfilesView(main){
+  main.innerHTML="";
+  const addBtn = el(`<button class="btn sm">+ New License Type</button>`);
+  const backBtn = el(`<a class="btn sm ghost" href="#licenses">← Customers &amp; Licenses</a>`);
+  main.appendChild(topbar("License Types & Profiles", [addBtn, backBtn]));
+
+  main.appendChild(el(`<div class="toolbar" style="margin-bottom:14px;gap:6px">
+    <a class="btn sm ghost" href="#licenses">Tenants &amp; Customer Licenses</a>
+    <a class="btn sm" href="#licenses/profiles">🏷 License Types &amp; Profiles</a>
+  </div>`));
+
+  const infoCard = el(`<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+      <div>
+        <h3 style="margin:0 0 6px">Reusable License Profiles</h3>
+        <div class="muted">License types define packages of feature entitlements, device capacity, admin seats, and validity terms. Built-in types include <b>Standard</b> (default), <b>Professional</b>, <b>Enterprise</b>, and <b>Demo</b>. You can create custom types or adjust existing profiles at any time.</div>
+      </div>
+    </div>
+  </div>`);
+  main.appendChild(infoCard);
+
+  const data = await api("/api/license-profiles").catch(()=>({profiles:[], feature_labels:{}}));
+  const profiles = data.profiles || [];
+  const featureLabels = data.feature_labels || {};
+
+  addBtn.onclick = () => editLicenseProfile(null, featureLabels, main);
+
+  const pc = el(`<div class="card"></div>`);
+  if(!profiles.length){
+    pc.appendChild(el(`<p class="muted">No license profiles found.</p>`));
+  } else {
+    const table = tableFrom(["Type Name","Edition","Description","Default Limits","Included Features","Status","Actions"],
+      profiles.map(p => {
+        const sysBadge = p.is_system
+          ? ` <span class="badge b-ok" style="font-size:10px">built-in</span>`
+          : ` <span class="badge b-off" style="font-size:10px">custom</span>`;
+        const activeBadge = p.active !== false
+          ? `<span class="badge b-ok">active</span>`
+          : `<span class="badge b-off">inactive</span>`;
+        const limits = `<div style="font-size:12px;line-height:1.4"><b>${p.default_max_devices}</b> devices<br><span class="muted">${p.default_max_admins} admins · ${p.default_term_days}d</span></div>`;
+        const enabledKeys = Object.entries(p.features || {}).filter(([_,v])=>v).map(([k])=>k);
+        const featurePills = enabledKeys.length
+          ? `<div style="display:flex;flex-wrap:wrap;gap:4px;max-width:320px">${enabledKeys.map(k=>`<span class="pill" style="font-size:10px;padding:1px 6px">${esc(featureLabels[k]||k)}</span>`).join("")}</div>`
+          : `<span class="muted" style="font-size:11px">No modules</span>`;
+
+        return [
+          `<div style="font-weight:700;font-size:14px">${esc(p.name)}${sysBadge}</div>`,
+          `<span class="pill" style="font-size:11px;text-transform:uppercase">${esc(p.edition)}</span>`,
+          `<span class="muted" style="font-size:12px">${esc(p.description||"—")}</span>`,
+          limits,
+          featurePills,
+          activeBadge,
+          `<button class="btn sm" data-ed="${p.id}">Edit</button>` +
+          (!p.is_system ? ` <button class="btn sm ghost" data-del="${p.id}" data-name="${esc(p.name)}" style="color:#ef4444;border-color:#ef4444">Delete</button>` : "")
+        ];
+      }));
+    pc.appendChild(table);
+
+    pc.querySelectorAll("[data-ed]").forEach(b => {
+      b.onclick = () => editLicenseProfile(profiles.find(p => p.id === b.dataset.ed), featureLabels, main);
+    });
+    pc.querySelectorAll("[data-del]").forEach(b => {
+      b.onclick = async () => {
+        const name = b.dataset.name;
+        if(!confirm(`Delete license type "${name}"? This cannot be undone.`)) return;
+        try {
+          await api(`/api/license-profiles/${b.dataset.del}`, {method:"DELETE"});
+          toast(`License type "${name}" deleted`);
+          licenseProfilesView(main);
+        } catch(err) {
+          toast(err.message, true);
+        }
+      };
+    });
+  }
+  main.appendChild(pc);
+}
+
+function editLicenseProfile(p, featureLabels, main){
+  const isNew = !p;
+  const curFeatures = p?.features || {};
+  const wrap = el(`<div style="max-width:580px"></div>`);
+
+  const formFields = fields([
+    {k:"name", label:"License type name", value: p?.name || "", options:[]},
+    {k:"edition", label:"Base edition tag", type:"select", options:["standard","professional","enterprise","demo","custom"], value: p?.edition || "custom"},
+    {k:"description", label:"Description", type:"textarea", value: p?.description || ""},
+    {k:"default_max_devices", label:"Default max devices", type:"number", value: p?.default_max_devices || 25},
+    {k:"default_max_admins", label:"Default max admins", type:"number", value: p?.default_max_admins || 3},
+    {k:"default_term_days", label:"Default term (days)", type:"number", value: p?.default_term_days || 365},
+    ...(!isNew && !p.is_system ? [{k:"active", label:"Active?", type:"select", options:[{v:"true",t:"Yes"},{v:"false",t:"No"}], value: p.active !== false ? "true" : "false"}] : [])
+  ]);
+
+  if(p?.is_system){
+    const nameInp = formFields.querySelector("input");
+    if(nameInp) nameInp.disabled = true;
+    const edSel = formFields.querySelector("select");
+    if(edSel) edSel.disabled = true;
+    formFields.prepend(el(`<div class="notice" style="margin-bottom:12px">This is a built-in system license type. You can customize its default device/admin limits and module feature toggles.</div>`));
+  }
+
+  wrap.appendChild(formFields);
+
+  // Features checkboxes grid
+  const featBox = el(`<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <label style="font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em">Included Feature Modules</label>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="btn sm ghost" id="selAllFeat" style="padding:2px 8px;font-size:11px">All</button>
+        <button type="button" class="btn sm ghost" id="stdFeat" style="padding:2px 8px;font-size:11px">Standard</button>
+        <button type="button" class="btn sm ghost" id="clearFeat" style="padding:2px 8px;font-size:11px">None</button>
+      </div>
+    </div>
+    <div class="feat-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;background:var(--panel2);padding:12px;border-radius:8px;border:1px solid var(--line)"></div>
+  </div>`);
+
+  const grid = featBox.querySelector(".feat-grid");
+  const featInputs = {};
+  const stdKeys = ["assets","software_inventory","web_app_monitoring","health_monitoring","alerts","reports","login_network_tracking"];
+
+  Object.entries(featureLabels).forEach(([k, label]) => {
+    const isChecked = isNew ? stdKeys.includes(k) : !!curFeatures[k];
+    const lbl = el(`<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px">
+      <input type="checkbox" value="${k}" ${isChecked ? "checked" : ""}/>
+      <span>${esc(label)}</span>
+    </label>`);
+    grid.appendChild(lbl);
+    featInputs[k] = lbl.querySelector("input");
+  });
+
+  featBox.querySelector("#selAllFeat").onclick = () => { Object.values(featInputs).forEach(inp => inp.checked = true); };
+  featBox.querySelector("#clearFeat").onclick = () => { Object.values(featInputs).forEach(inp => inp.checked = false); };
+  featBox.querySelector("#stdFeat").onclick = () => {
+    Object.entries(featInputs).forEach(([k, inp]) => { inp.checked = stdKeys.includes(k); });
+  };
+
+  wrap.appendChild(featBox);
+
+  modal(isNew ? "Create License Type" : `Edit License Type — ${esc(p.name)}`, wrap, async () => {
+    const v = formFields._values();
+    const name = (v.name || "").trim();
+    if(!name && isNew) throw new Error("License type name is required");
+
+    const featObj = {};
+    Object.entries(featInputs).forEach(([k, inp]) => { featObj[k] = inp.checked; });
+
+    const payload = {
+      name: name,
+      edition: v.edition || "custom",
+      description: v.description || null,
+      default_max_devices: Math.max(1, +v.default_max_devices || 25),
+      default_max_admins: Math.max(1, +v.default_max_admins || 3),
+      default_term_days: Math.max(1, +v.default_term_days || 365),
+      features: featObj
+    };
+    if("active" in v) payload.active = v.active === "true";
+
+    if(isNew){
+      await api("/api/license-profiles", {method:"POST", body:payload});
+      toast(`License type "${name}" created`);
+    } else {
+      await api(`/api/license-profiles/${p.id}`, {method:"PUT", body:payload});
+      toast(`License type "${p.name}" updated`);
+    }
+    licenseProfilesView(main);
+  }, isNew ? "Create" : "Save Changes");
+}
 function renderTenantTable(tenants){
   const isPlatform=S.role==="platform_super_admin";
   const wrap=el(`<div></div>`);
@@ -1316,7 +1499,20 @@ Password : ${esc(r.owner_password||(r.password_source==="cloud"?"(same password 
   },"Activate");
 }
 
-function addTenant(main){
+async function addTenant(main){
+  const profData = await api("/api/license-profiles").catch(()=>({profiles:[]}));
+  const profiles = (profData.profiles || []).filter(p => p.active !== false);
+  const stdProf = profiles.find(p => p.name.toLowerCase() === "standard") || profiles[0] || {
+    id: "", name: "Standard", default_max_devices: 25, default_max_admins: 3, default_term_days: 365, edition: "standard"
+  };
+
+  const profOptions = profiles.length
+    ? profiles.map(p => ({
+        v: p.id,
+        t: `${p.name} (${p.default_max_devices} devices, ${p.default_term_days}d) · ${p.edition}`
+      }))
+    : [{v:"standard", t:"Standard (25 devices, 365d)"}];
+
   const f=fields([
     {k:"company_name",label:"Company name"},
     {k:"contact_email",label:"Registered email (receives the license key)",type:"email"},
@@ -1325,17 +1521,54 @@ function addTenant(main){
     {k:"owner_email",label:"Owner username / email (blank = registered email)",type:"email"},
     {k:"owner_password",label:"Owner password (blank = auto-generate)",type:"text"},
     {k:"branch_name",label:"Branch / site name (optional — blank = main office)"},
-    {k:"edition",label:"License edition",type:"select",options:["standard","enterprise","demo","custom"],value:"standard"},
-    {k:"license_type",label:"License type",type:"select",options:[{v:"subscription_monthly",t:"Subscription (monthly)"},{v:"lifetime",t:"Lifetime (one-time, 1yr support)"}],value:"subscription_monthly"},
-    {k:"term_days",label:"Term (days) — ignored for lifetime",type:"number",value:365},
-    {k:"max_devices",label:"Max devices",type:"number",value:25},
+    {k:"profile_id",label:"License Type / Profile",type:"select",options:profOptions,value:stdProf.id||profOptions[0].v},
+    {k:"license_type",label:"License payment model",type:"select",options:[{v:"subscription_monthly",t:"Subscription (monthly/annual)"},{v:"lifetime",t:"Lifetime (one-time, 1yr support)"}],value:"subscription_monthly"},
+    {k:"term_days",label:"Term (days) — ignored for lifetime",type:"number",value:stdProf.default_term_days||365},
+    {k:"max_devices",label:"Max devices",type:"number",value:stdProf.default_max_devices||25},
   ]);
+
+  const selects = f.querySelectorAll("select");
+  const profSelect = selects[2]; // 3rd select is profile_id
+  const numInputs = f.querySelectorAll("input[type='number']");
+  const termInp = numInputs[0];
+  const devInp = numInputs[1];
+
+  const infoHint = el(`<div class="notice" style="margin-top:6px;font-size:11px"></div>`);
+  const updateHint = (pid) => {
+    const chosen = profiles.find(p => p.id === pid);
+    if(chosen){
+      const featCount = Object.entries(chosen.features || {}).filter(([_,v])=>v).length;
+      infoHint.innerHTML = `<b>${esc(chosen.name)}</b>: ${esc(chosen.description || "")} (${featCount} modules enabled)`;
+      infoHint.style.display = "block";
+    } else {
+      infoHint.style.display = "none";
+    }
+  };
+
+  if(profSelect){
+    profSelect.parentNode.appendChild(infoHint);
+    updateHint(profSelect.value);
+    profSelect.onchange = () => {
+      const chosen = profiles.find(p => p.id === profSelect.value);
+      if(chosen){
+        if(devInp) devInp.value = chosen.default_max_devices;
+        if(termInp) termInp.value = chosen.default_term_days;
+      }
+      updateHint(profSelect.value);
+    };
+  }
+
   modal("New customer — create account, license & email key",f,async()=>{
     const v=f._values();
-    const body={company_name:v.company_name,contact_email:v.contact_email,deployment_model:v.deployment_model,
+    const chosen = profiles.find(p => p.id === v.profile_id);
+    const body={
+      company_name:v.company_name, contact_email:v.contact_email, deployment_model:v.deployment_model,
       branch_name:v.branch_name||null,
-      owner_name:v.owner_name,owner_email:v.owner_email||null,owner_password:v.owner_password||null,
-      edition:v.edition,license_type:v.license_type,term_days:+v.term_days,max_devices:+v.max_devices,send_email:true};
+      owner_name:v.owner_name, owner_email:v.owner_email||null, owner_password:v.owner_password||null,
+      profile_id: v.profile_id || null,
+      edition: chosen ? chosen.edition : "standard",
+      license_type:v.license_type, term_days:+v.term_days, max_devices:+v.max_devices, send_email:true
+    };
     const r=await api("/api/tenants/provision",{method:"POST",body});
     const emailLine = r.email_status==="smtp"
       ? `✓ License key emailed to <b>${esc(v.contact_email)}</b>.`
@@ -1347,10 +1580,11 @@ Console   : ${esc(location.origin)}
 Username  : ${esc(r.owner_email)}
 Password  : ${esc(r.owner_password)}
 
-License ID : ${esc(r.license_id)}
-License Key: ${esc(r.license_key)}
-Devices    : ${r.max_devices}
-Expires    : ${fmtDate(r.expiry)}</pre>
+License Type: ${esc(r.profile_name || chosen?.name || "Standard")}
+License ID  : ${esc(r.license_id)}
+License Key : ${esc(r.license_key)}
+Devices     : ${r.max_devices}
+Expires     : ${fmtDate(r.expiry)}</pre>
       <p>${emailLine}</p></div>`);
     const dl=el(`<button class="btn">⬇ Download license key (.lic)</button>`);
     dl.onclick=()=>downloadWithAuth(r.download_url, esc(r.company_name)+".lic");
@@ -1372,42 +1606,92 @@ async function downloadWithAuth(path, filename){
     a.remove(); URL.revokeObjectURL(url); toast("Downloaded "+filename);
   }catch(e){ toast(e.message,true); }
 }
+
 async function addLicense(tenantId){
-  const existing=await api(`/api/tenants/${tenantId}/licenses`).catch(()=>[]);
+  const [existing, profData]=await Promise.all([
+    api(`/api/tenants/${tenantId}/licenses`).catch(()=>[]),
+    api("/api/license-profiles").catch(()=>({profiles:[]}))
+  ]);
   const live=existing.filter(l=>l.status!=="revoked");
+  const profiles = (profData.profiles || []).filter(p => p.active !== false);
+  const stdProf = profiles.find(p => p.name.toLowerCase() === "standard") || profiles[0] || {
+    id: "", name: "Standard", default_max_devices: 25, default_max_admins: 3, default_term_days: 365, edition: "standard"
+  };
+
+  const profOptions = profiles.length
+    ? profiles.map(p => ({
+        v: p.id,
+        t: `${p.name} (${p.default_max_devices} devices, ${p.default_term_days}d) · ${p.edition}`
+      }))
+    : [{v:"standard", t:"Standard (25 devices, 365d)"}];
+
   const f=fields([
     {k:"branch_name",label:live.length?"Branch name (required — this company already has a license)":"Branch name (optional — blank = main office)"},
-    {k:"edition",label:"Edition",type:"select",options:["demo","standard","custom","enterprise"],value:"standard"},
-    {k:"term_days",label:"Term (days)",type:"number",value:365},
-    {k:"max_devices",label:"Max devices",type:"number",value:25},
-    {k:"max_admins",label:"Max admins",type:"number",value:3},
-    {k:"is_demo",label:"Demo?",type:"select",options:[{v:"false",t:"No"},{v:"true",t:"Yes"}],value:"false"}]);
-  if(live.length) f.prepend(el(`<div class="notice">This company already has ${live.length} license(s): ${live.map(l=>`<b>${esc(l.branch_name||"Main office")}</b>`).join(", ")}. To add devices, close this and use <b>Licenses → Increase</b>. Create a new license only for a different branch.</div>`));
+    {k:"profile_id",label:"License Type / Profile",type:"select",options:profOptions,value:stdProf.id||profOptions[0].v},
+    {k:"term_days",label:"Term (days)",type:"number",value:stdProf.default_term_days||365},
+    {k:"max_devices",label:"Max devices",type:"number",value:stdProf.default_max_devices||25},
+    {k:"max_admins",label:"Max admins",type:"number",value:stdProf.default_max_admins||3},
+    {k:"is_demo",label:"Demo?",type:"select",options:[{v:"false",t:"No"},{v:"true",t:"Yes"}],value:"false"}
+  ]);
+
+  if(live.length) f.prepend(el(`<div class="notice">This company already has ${live.length} license(s): ${live.map(l=>`<b>${esc(l.branch_name||"Main office")}</b>`).join(", ")}. To add devices or change license type, use <b>Licenses → Change Type / Edit</b>. Create a new license only for a different branch.</div>`));
+
+  const profSelect = f.querySelectorAll("select")[0];
+  const numInputs = f.querySelectorAll("input[type='number']");
+  if(profSelect && numInputs.length >= 3){
+    profSelect.onchange = () => {
+      const chosen = profiles.find(p => p.id === profSelect.value);
+      if(chosen){
+        numInputs[0].value = chosen.default_term_days;
+        numInputs[1].value = chosen.default_max_devices;
+        numInputs[2].value = chosen.default_max_admins;
+      }
+    };
+  }
+
   modal("Create license",f,async()=>{
     const v=f._values();
-    const pkg=await api(`/api/tenants/${tenantId}/licenses`,{method:"POST",body:{branch_name:v.branch_name||null,edition:v.edition,term_days:+v.term_days,max_devices:+v.max_devices,max_admins:+v.max_admins,is_demo:v.is_demo==="true"}});
+    const chosen = profiles.find(p => p.id === v.profile_id);
+    const pkg=await api(`/api/tenants/${tenantId}/licenses`,{method:"POST",body:{
+      branch_name:v.branch_name||null,
+      profile_id: v.profile_id || null,
+      edition: chosen ? chosen.edition : "standard",
+      term_days:+v.term_days, max_devices:+v.max_devices, max_admins:+v.max_admins,
+      is_demo:v.is_demo==="true"
+    }});
     const body=el(`<div><p class="muted">Give the .lic file to the customer and attach it on the client server's activation screen.</p>
-      <pre class="json">Company:     ${esc(pkg.company_name)}${pkg.branch_name?`\nBranch:      ${esc(pkg.branch_name)}`:""}\nLicense ID:  ${esc(pkg.license_id)}\nLicense Key: ${esc(pkg.activation_token)}</pre></div>`);
+      <pre class="json">Company:     ${esc(pkg.company_name)}${pkg.branch_name?`\nBranch:      ${esc(pkg.branch_name)}`:""}
+License Type:${esc(pkg.profile_name || chosen?.name || "Standard")}
+License ID:  ${esc(pkg.license_id)}
+License Key: ${esc(pkg.activation_token)}</pre></div>`);
     const dl=el(`<button class="btn">⬇ Download license file (.lic)</button>`);
     dl.onclick=()=>downloadWithAuth(pkg.download_url||`/api/licenses/${pkg.license_id}/key`,"license.lic");
     body.appendChild(dl);
     modal("License created",body,null);
   },"Create");
 }
+
 async function showLicenses(tenantId, bgPrev){
   if(bgPrev) bgPrev.remove();
   const rows=await api(`/api/tenants/${tenantId}/licenses`);
   const body=el(`<div></div>`);
   if(!rows.length) body.appendChild(el(`<p class="muted">No licenses yet. Use <b>+ License</b> to create one.</p>`));
-  body.appendChild(tableFrom(["Branch","Edition","Status","Activated","Expiry","Devices","Admins","Actions"],
-    rows.map(l=>[`<b>${esc(l.branch_name||"Main office")}</b>`,
-      esc(l.edition)+(l.license_type==="lifetime"?' <span class="badge b-ok">lifetime</span>':""),
-      statusBadge(l.status),
-      l.activated?`<span class="badge b-ok">yes</span>${l.activated_server_id?`<div class="muted" style="font-size:10px">${esc(l.activated_server_id)}</div>`:""}`:`<span class="badge b-off">not yet</span>`,
-      l.license_type==="lifetime"?"—":fmtDate(l.expiry_date),l.max_devices,l.max_admins,
-      `<button class="btn sm ghost" data-key="${l.id}">⬇ .lic</button>`+
-      (l.status!=="revoked"?` <button class="btn sm" data-inc="${l.id}">Increase</button> <button class="btn sm ghost" data-rev="${l.id}" style="color:#eab308;border-color:#eab308">Revoke</button>`:"")+
-      (!l.activated?` <button class="btn sm ghost" data-rm="${l.id}" style="color:#ef4444;border-color:#ef4444">Remove</button>`:"")])));
+  body.appendChild(tableFrom(["Branch","License Type","Status","Activated","Expiry","Devices","Admins","Actions"],
+    rows.map(l=>{
+      const typeDisplay = l.profile_name
+        ? `<b>${esc(l.profile_name)}</b> <span class="muted" style="font-size:11px">(${esc(l.edition)})</span>`
+        : `<b>${esc(l.edition)}</b>`;
+      return [
+        `<b>${esc(l.branch_name||"Main office")}</b>`,
+        typeDisplay + (l.license_type==="lifetime"?' <span class="badge b-ok">lifetime</span>':""),
+        statusBadge(l.status),
+        l.activated?`<span class="badge b-ok">yes</span>${l.activated_server_id?`<div class="muted" style="font-size:10px">${esc(l.activated_server_id)}</div>`:""}`:`<span class="badge b-off">not yet</span>`,
+        l.license_type==="lifetime"?"—":fmtDate(l.expiry_date),l.max_devices,l.max_admins,
+        `<button class="btn sm ghost" data-key="${l.id}">⬇ .lic</button>`+
+        (l.status!=="revoked"?` <button class="btn sm" data-inc="${l.id}">Change Type / Edit</button> <button class="btn sm ghost" data-rev="${l.id}" style="color:#eab308;border-color:#eab308">Revoke</button>`:"")+
+        (!l.activated?` <button class="btn sm ghost" data-rm="${l.id}" style="color:#ef4444;border-color:#ef4444">Remove</button>`:"")
+      ];
+    })));
   const bg=modal("Licenses",body,null,"Close");
   body.querySelectorAll("[data-key]").forEach(b=>b.onclick=()=>downloadWithAuth(`/api/licenses/${b.dataset.key}/key`,"license.lic"));
   body.querySelectorAll("[data-inc]").forEach(b=>b.onclick=()=>increaseLicense(rows.find(x=>x.id===b.dataset.inc),tenantId,bg));
@@ -1420,19 +1704,73 @@ async function showLicenses(tenantId, bgPrev){
     try{ await api(`/api/licenses/${b.dataset.rm}`,{method:"DELETE"}); toast("License removed"); showLicenses(tenantId,bg); }catch(e){ toast(e.message,true); }
   });
 }
-function increaseLicense(l, tenantId, bgList){
+
+async function increaseLicense(l, tenantId, bgList){
+  const profData = await api("/api/license-profiles").catch(()=>({profiles:[]}));
+  const profiles = profData.profiles || [];
+
+  const curProf = profiles.find(p => p.name === l.profile_name || p.edition === l.edition);
+
+  const profOptions = [
+    {v:"", t:`(Current: ${l.profile_name || l.edition})`},
+    ...profiles.map(p => ({
+      v: p.id,
+      t: `${p.name} (${p.default_max_devices} devices, ${p.default_term_days}d) · ${p.edition}`
+    }))
+  ];
+
   const f=fields([
+    {k:"profile_id",label:"License Type / Profile (select to switch type & features)",type:"select",options:profOptions,value:curProf?curProf.id:""},
     {k:"max_devices",label:"Max devices",type:"number",value:l.max_devices},
     {k:"max_admins",label:"Max admins",type:"number",value:l.max_admins},
     {k:"extend_days",label:"Extend validity by (days, 0 = no change)",type:"number",value:0},
     {k:"branch_name",label:"Branch name (blank = main office)",value:l.branch_name||""},
   ]);
-  f.appendChild(el(`<p class="muted">The client server applies the new limits automatically on its next sync (every 10 minutes). No new key is needed.</p>`));
-  modal(`Increase license — ${esc(l.branch_name||"Main office")}`,f,async()=>{
+
+  const profSelect = f.querySelector("select");
+  const numInputs = f.querySelectorAll("input[type='number']");
+  const infoHint = el(`<div class="notice" style="margin-top:6px;font-size:11px"></div>`);
+
+  const updateProfHint = (pid) => {
+    const chosen = profiles.find(p => p.id === pid);
+    if(chosen){
+      const featCount = Object.entries(chosen.features || {}).filter(([_,v])=>v).length;
+      infoHint.innerHTML = `Selected: <b>${esc(chosen.name)}</b> (${esc(chosen.edition)}) · ${featCount} modules enabled.<br>${esc(chosen.description||"")}`;
+      infoHint.style.display = "block";
+    } else {
+      infoHint.innerHTML = `Current Type: <b>${esc(l.profile_name || l.edition)}</b>. Choose a different profile above to upgrade or switch license type.`;
+      infoHint.style.display = "block";
+    }
+  };
+
+  if(profSelect){
+    profSelect.parentNode.appendChild(infoHint);
+    updateProfHint(profSelect.value);
+    profSelect.onchange = () => {
+      const chosen = profiles.find(p => p.id === profSelect.value);
+      if(chosen && numInputs.length >= 2){
+        if(confirm(`Switch to "${chosen.name}" profile defaults? Devices: ${chosen.default_max_devices}, Admins: ${chosen.default_max_admins}`)){
+          numInputs[0].value = chosen.default_max_devices;
+          numInputs[1].value = chosen.default_max_admins;
+        }
+      }
+      updateProfHint(profSelect.value);
+    };
+  }
+
+  f.appendChild(el(`<p class="muted">The client server applies the new license type and limits automatically on its next sync (every 10 minutes). No new key is needed.</p>`));
+
+  modal(`Change License Type / Limits — ${esc(l.branch_name||"Main office")}`,f,async()=>{
     const v=f._values();
-    await api(`/api/licenses/${l.id}/update`,{method:"POST",body:{max_devices:+v.max_devices,max_admins:+v.max_admins,
-      extend_days:+v.extend_days||0,branch_name:v.branch_name}});
-    toast("License updated");
+    const body = {
+      max_devices:+v.max_devices,
+      max_admins:+v.max_admins,
+      extend_days:+v.extend_days||0,
+      branch_name:v.branch_name
+    };
+    if(v.profile_id) body.profile_id = v.profile_id;
+    await api(`/api/licenses/${l.id}/update`,{method:"POST",body});
+    toast("License updated successfully");
     showLicenses(tenantId,bgList);
   },"Save");
 }
@@ -1623,7 +1961,7 @@ VIEWS.settings = async (main) => {
   if(S.role==="customer_owner"){
     const ls=await api("/api/license/status").catch(()=>null);
     if(ls){ const lc=el(`<div class="card" style="margin-bottom:16px"><h3 style="margin:0 0 6px">License</h3>
-      <div class="muted">Status: <b>${esc(ls.label)}</b> · ${ls.edition?esc(ls.edition)+" · ":""}${ls.max_devices?ls.max_devices+" devices · ":""}${ls.expiry?"expires "+fmtDate(ls.expiry):""}</div></div>`);
+      <div class="muted">Status: <b>${esc(ls.label)}</b> · ${ls.profile_name ? `<b>${esc(ls.profile_name)}</b> (${esc(ls.edition)}) · ` : (ls.edition?esc(ls.edition)+" · ":"")}${ls.max_devices?ls.max_devices+" devices · ":""}${ls.expiry?"expires "+fmtDate(ls.expiry):""}</div></div>`);
       if(!ls.usable){ const a=el(`<button class="btn warn" style="margin-top:10px">Activate license</button>`); a.onclick=()=>location.hash="activate"; lc.appendChild(a); }
       main.appendChild(lc);
     }

@@ -7,6 +7,7 @@ import json
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import audit
@@ -58,6 +59,7 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
         "license_id": lic.id,
         "license_key": lic.signature,              # signed activation token
         "edition": lic.edition.value,
+        "profile_name": lic.profile_name,
         "license_type": lic.license_type.value,
         "expiry": lic.expiry_date.isoformat(),
         "max_devices": lic.max_devices,
@@ -78,6 +80,24 @@ def _clean_key(value) -> str:
 def _lic_filename(tenant: Tenant, lic: License) -> str:
     name = tenant.company_name + (f" - {lic.branch_name}" if lic.branch_name else "")
     return ("".join(c for c in name if c.isalnum() or c in " _-").strip() or "license") + ".lic"
+
+
+def _profile_for(db: Session, body) -> "LicenseProfile | None":
+    """The chosen license type, or None. Resolves by profile ID or profile name."""
+    from ..models import LicenseProfile
+    lic_svc.ensure_system_profiles(db)
+    pid = getattr(body, "profile_id", None) if not isinstance(body, dict) else body.get("profile_id")
+    pname = getattr(body, "profile_name", None) if not isinstance(body, dict) else body.get("profile_name")
+    val = pid or pname
+    if not val:
+        return None
+    val_str = str(val).strip()
+    p = db.get(LicenseProfile, val_str)
+    if not p:
+        p = db.query(LicenseProfile).filter(func.lower(LicenseProfile.name) == val_str.lower()).first()
+    if not p:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"License type '{val_str}' not found")
+    return p
 
 
 def _norm_branch(name: str | None) -> str | None:
@@ -217,25 +237,47 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
                             f"{t.company_name} already has a license for {where}. Use 'Increase' on that "
                             "license to add devices, or enter a different Branch name for a new site.")
     from ..models import LicenseType
+    prof = _profile_for(db, body)
+    try:
+        edition = LicenseEdition(prof.edition) if prof else body.edition
+    except (ValueError, KeyError):
+        edition = LicenseEdition.CUSTOM
+    max_devices = body.max_devices
+    max_admins = body.max_admins
+    term_days = body.term_days
+    if prof:
+        if body.max_devices == 25 and prof.default_max_devices != 25:
+            max_devices = prof.default_max_devices
+        elif not body.max_devices:
+            max_devices = prof.default_max_devices
+        if body.max_admins == 3 and prof.default_max_admins != 3:
+            max_admins = prof.default_max_admins
+        elif not body.max_admins:
+            max_admins = prof.default_max_admins
+        if body.term_days == 365 and prof.default_term_days != 365:
+            term_days = prof.default_term_days
+        elif not body.term_days:
+            term_days = prof.default_term_days
     if body.is_demo:
         term = 15
     elif body.license_type == LicenseType.LIFETIME:
         term = 365 * 100           # lifetime: effectively non-expiring (support = 1 year, tracked separately)
     else:
-        term = body.term_days
-    features = {**lic_svc.DEFAULT_FEATURES, **(body.features or {})}
+        term = term_days
+    features = lic_svc.full_features(prof.features) if prof else {**lic_svc.DEFAULT_FEATURES, **(body.features or {})}
     lic = License(
         tenant_id=tenant_id,
-        edition=body.edition,
+        edition=edition,
         license_type=body.license_type,
         start_date=datetime.now(timezone.utc),
         expiry_date=datetime.now(timezone.utc) + timedelta(days=term),
-        max_devices=body.max_devices,
-        max_admins=body.max_admins,
+        max_devices=max_devices or 25,
+        max_admins=max_admins or 3,
         max_storage_mb=body.max_storage_mb,
-        is_demo=body.is_demo or body.edition == LicenseEdition.DEMO,
+        is_demo=body.is_demo or edition == LicenseEdition.DEMO,
         features=features,
         branch_name=branch,
+        profile_name=prof.name if prof else (body.profile_name or None),
     )
     db.add(lic)
     db.flush()
@@ -243,14 +285,15 @@ def create_license(tenant_id: str, body: LicenseIn, request: Request,
     lic.signature = token
     audit.record(db, action="license_create", tenant_id=tenant_id, actor_id=admin.id,
                  actor_email=admin.email, target_type="license", target_id=lic.id,
-                 new_value={"edition": lic.edition.value, "expiry": lic.expiry_date.isoformat(),
-                            "branch": branch},
+                 new_value={"edition": lic.edition.value, "profile": lic.profile_name,
+                            "expiry": lic.expiry_date.isoformat(), "branch": branch},
                  source_ip=client_ip(request))
     db.commit()
     return LicensePackageOut(
         license_id=lic.id, activation_token=token,
         company_name=t.company_name, server_hint="Attach the .lic file on the client server's activation screen",
         branch_name=branch, download_url=f"/api/licenses/{lic.id}/key",
+        profile_name=lic.profile_name,
     )
 
 
@@ -287,12 +330,36 @@ def update_license(license_id: str, body: LicenseUpdateIn, request: Request,
             raise HTTPException(status.HTTP_409_CONFLICT,
                                 f"Another license of this company already uses branch '{branch or 'main office'}'")
         lic.branch_name = branch
+    prof = _profile_for(db, body)
+    if prof:                                # switch license type: features, edition label, limits
+        try:
+            lic.edition = LicenseEdition(prof.edition)
+        except (ValueError, KeyError):
+            lic.edition = LicenseEdition.CUSTOM
+        lic.features = lic_svc.full_features(prof.features)
+        lic.profile_name = prof.name
+        if body.max_devices is None:
+            lic.max_devices = prof.default_max_devices
+        if body.max_admins is None:
+            lic.max_admins = prof.default_max_admins
+        old["profile"] = lic.profile_name
+    elif body.profile_name:
+        lic.profile_name = body.profile_name
+
+    if body.edition:
+        lic.edition = body.edition
+    if body.license_type:
+        lic.license_type = body.license_type
+    if body.features:
+        lic.features = lic_svc.full_features(body.features)
+
     # re-sign so a freshly downloaded .lic shows the new limits (old keys stay valid: same id+secret)
     lic.signature = lic_svc.build_activation_token(lic, t.company_name if t else "")
     audit.record(db, action="license_update", tenant_id=lic.tenant_id, actor_id=admin.id,
                  actor_email=admin.email, target_type="license", target_id=lic.id, old_value=old,
                  new_value={"max_devices": lic.max_devices, "max_admins": lic.max_admins,
-                            "expiry": lic.expiry_date.isoformat(), "branch": lic.branch_name},
+                            "expiry": lic.expiry_date.isoformat(), "branch": lic.branch_name,
+                            "profile": lic.profile_name, "edition": lic.edition.value},
                  source_ip=client_ip(request))
     db.commit()
     lic.status = lic_svc.effective_status(lic)
@@ -346,19 +413,44 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
 
     # 3. license + key
     from ..models import LicenseType
-    if body.is_demo or body.edition == LicenseEdition.DEMO:
+    prof = _profile_for(db, body)
+    try:
+        edition = LicenseEdition(prof.edition) if prof else body.edition
+    except (ValueError, KeyError):
+        edition = LicenseEdition.CUSTOM
+    max_devices = body.max_devices
+    max_admins = body.max_admins
+    term_days = body.term_days
+    if prof:
+        if body.max_devices == 25 and prof.default_max_devices != 25:
+            max_devices = prof.default_max_devices
+        elif not body.max_devices:
+            max_devices = prof.default_max_devices
+        if body.max_admins == 3 and prof.default_max_admins != 3:
+            max_admins = prof.default_max_admins
+        elif not body.max_admins:
+            max_admins = prof.default_max_admins
+        if body.term_days == 365 and prof.default_term_days != 365:
+            term_days = prof.default_term_days
+        elif not body.term_days:
+            term_days = prof.default_term_days
+
+    if body.is_demo or edition == LicenseEdition.DEMO:
         term = 15
     elif body.license_type == LicenseType.LIFETIME:
         term = 365 * 100
     else:
-        term = body.term_days
+        term = term_days
+
+    features = lic_svc.full_features(prof.features) if prof else lic_svc.DEFAULT_FEATURES
     lic = License(
-        tenant_id=tenant.id, edition=body.edition, license_type=body.license_type,
+        tenant_id=tenant.id, edition=edition, license_type=body.license_type,
         start_date=datetime.now(timezone.utc),
         expiry_date=datetime.now(timezone.utc) + timedelta(days=term),
-        max_devices=body.max_devices, max_admins=body.max_admins,
-        is_demo=body.is_demo or body.edition == LicenseEdition.DEMO,
-        features=lic_svc.DEFAULT_FEATURES, branch_name=_norm_branch(body.branch_name),
+        max_devices=max_devices or 25, max_admins=max_admins or 3,
+        is_demo=body.is_demo or edition == LicenseEdition.DEMO,
+        features=features, branch_name=_norm_branch(body.branch_name),
+        profile_name=prof.name if prof else (body.profile_name or None),
     )
     db.add(lic)
     db.flush()
@@ -367,7 +459,7 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
     audit.record(db, action="tenant_provision", tenant_id=tenant.id, actor_id=admin.id,
                  actor_email=admin.email, target_type="tenant", target_id=tenant.id,
                  new_value={"company": tenant.company_name, "owner": owner_email,
-                            "license_id": lic.id}, source_ip=client_ip(request))
+                            "license_id": lic.id, "profile": lic.profile_name}, source_ip=client_ip(request))
 
     # 4. email the key to the registered address
     email_status = "skipped"
@@ -409,6 +501,7 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
         license_id=lic.id, license_key=lic.signature, expiry=lic.expiry_date,
         max_devices=lic.max_devices,
         download_url=f"/api/licenses/{lic.id}/key", email_status=email_status,
+        profile_name=lic.profile_name, edition=lic.edition.value,
     )
 
 
@@ -466,6 +559,7 @@ def provision_info(body: dict, request: Request, db: Session = Depends(get_db)):
         "owner_password_hash": owner.password_hash if owner else None,
         "cred_seq": owner.cred_seq if owner else 0,
         "edition": lic.edition.value,
+        "profile_name": lic.profile_name,
         "license_type": lic.license_type.value,
         "expiry": lic.expiry_date.isoformat(),
         "max_devices": lic.max_devices,
@@ -526,6 +620,8 @@ def license_sync(body: dict, request: Request, db: Session = Depends(get_db)):
         "max_admins": lic.max_admins,
         "branch_name": lic.branch_name,
         "features": lic.features,
+        "edition": lic.edition.value,
+        "profile_name": lic.profile_name,
     }
 
 
@@ -582,6 +678,8 @@ def my_license_status(db: Session = Depends(get_db), user: AdminUser = Depends(g
         "label": lic_svc.activation_label(lic), "license_id": lic.id,
         "edition": lic.edition.value, "expiry": lic.expiry_date,
         "max_devices": lic.max_devices,
+        "profile_name": lic.profile_name,
+        "features": lic.features,
     }
 
 
@@ -680,6 +778,7 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
     if not lic:
         lic = License(id=license_id, tenant_id=tenant.id,
                       edition=LicenseEdition(info["edition"]),
+                      profile_name=info.get("profile_name"),
                       license_type=LicenseType(info.get("license_type", "subscription_monthly")),
                       expiry_date=exp, max_devices=info["max_devices"], max_admins=info["max_admins"],
                       features=info.get("features") or {},
@@ -691,6 +790,8 @@ def activate_online(body: dict, request: Request, db: Session = Depends(get_db),
         lic.expiry_date = exp
         lic.max_devices = info["max_devices"]
         lic.max_admins = info.get("max_admins") or lic.max_admins
+        if info.get("profile_name"):
+            lic.profile_name = info["profile_name"]
     lic.branch_name = info.get("branch_name")
     lic.status = LicenseStatus.ACTIVE
     lic.signature = key
