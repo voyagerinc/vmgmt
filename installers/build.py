@@ -78,6 +78,10 @@ def build_voyager_agent() -> None:
         "--hidden-import", "mss", "--collect-submodules", "mss",
         "--hidden-import", "PIL", "--hidden-import", "PIL.Image", "--hidden-import", "psutil",
         "--hidden-import", "win32gui", "--hidden-import", "win32process",
+        # trackers (logins / network / USB / email)
+        "--hidden-import", "trackers", "--hidden-import", "win32evtlog", "--hidden-import", "win32security",
+        "--hidden-import", "win32file", "--hidden-import", "win32event", "--hidden-import", "win32con",
+        "--hidden-import", "pywintypes", "--hidden-import", "pythoncom", "--hidden-import", "win32com.client",
         str(agent / "agent.py"),
     ])
     import json

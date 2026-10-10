@@ -123,6 +123,7 @@ const NAV = [
   ["assets","Assets","▤"],
   ["software","Software","◉"],
   ["activity","Web / App Activity","◍"],
+  ["tracking","Tracking (Login/Network/USB/Email)","◷"],
   ["policies","Policies","⚙"],
   ["alerts","Alerts","⚑"],
   ["evidence","Screenshots / Evidence","▧"],
@@ -511,6 +512,132 @@ VIEWS.activity = async (main) => {
     recent.slice(0,100).map(e=>[fmtDate(e.ts),esc(e.device_id.slice(0,8)),esc(e.type),esc(e.app||e.domain||"—"),esc((e.title||"").slice(0,60))])));
 };
 const fmtDur=(s)=>{ s=s||0; if(s<60)return s+"s"; if(s<3600)return Math.floor(s/60)+"m"; return (s/3600).toFixed(1)+"h"; };
+
+/* ---------------- Tracking: logins, network/Wi-Fi, USB and email file events + profiles ---------------- */
+const TRK_CAT={login:["Logins","#60a5fa"],network:["Network / Wi-Fi","#34d399"],usb:["USB files","#f59e0b"],email:["Email files","#f472b6"]};
+const TRK_EVT={logon:"Logged on",logoff:"Logged off",lock:"Locked",unlock:"Unlocked",startup:"Startup",shutdown:"Shutdown",
+  shutdown_initiated:"Shutdown requested",unexpected_shutdown:"Unexpected shutdown",sleep:"Sleep",wake:"Wake",
+  adapter_up:"Adapter connected",adapter_down:"Adapter disconnected",ip_changed:"IP changed",internet_lost:"Internet lost",
+  internet_restored:"Internet restored",status:"Network status",wifi_connected:"Wi-Fi connected",wifi_changed:"Wi-Fi changed",
+  wifi_disconnected:"Wi-Fi disconnected",usb_inserted:"USB inserted",usb_removed:"USB removed",copied_to_usb:"Copied TO USB",
+  copied_from_usb:"Copied FROM USB",email_sent:"Sent (Outlook)",email_attached:"Attached in webmail"};
+const fmtUtc=(s)=>{ if(!s) return "—"; const d=new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s)?s:s+"Z"); return isNaN(d)?"—":d.toLocaleString(); };
+const fmtSize=(b)=>b==null?"":b<1024?b+" B":b<1048576?(b/1024).toFixed(1)+" KB":(b/1048576).toFixed(1)+" MB";
+const TRK_SYNC=[[60,"1 minute"],[120,"2 minutes"],[300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1800,"30 minutes"],[3600,"1 hour"]];
+
+VIEWS.tracking = async (main, args) => {
+  const tab=(args&&args[0])||"events";
+  main.innerHTML="";
+  const tabs=el(`<div class="toolbar" style="margin-bottom:14px">
+    <a class="btn sm ${tab==="events"?"":"ghost"}" href="#tracking/events">Events</a>
+    <a class="btn sm ${tab==="profiles"?"":"ghost"}" href="#tracking/profiles">Profiles &amp; computers</a></div>`);
+  main.appendChild(topbar("Tracking — logins, network, USB & email"));
+  main.appendChild(tabs);
+  if(tab==="profiles") return trackingProfiles(main);
+  return trackingEvents(main);
+};
+
+async function trackingEvents(main){
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
+  const f=el(`<div class="card" style="margin-bottom:14px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <div class="field" style="margin:0"><label>Category</label><select id="tc"><option value="">All</option>${Object.entries(TRK_CAT).map(([k,v])=>`<option value="${k}">${v[0]}</option>`).join("")}</select></div>
+    <div class="field" style="margin:0"><label>Computer</label><select id="td"><option value="">All computers</option>${devs.map(d=>`<option value="${d.id}">${esc(d.hostname)}</option>`).join("")}</select></div>
+    <div class="field" style="margin:0"><label>From</label><input id="tf" type="date"/></div>
+    <div class="field" style="margin:0"><label>To</label><input id="tt" type="date"/></div>
+    <div class="field" style="margin:0;flex:1;min-width:180px"><label>Search (file, user, USB, recipient, Wi-Fi)</label><input id="tq" placeholder="e.g. salary.xlsx"/></div>
+    <button class="btn" id="tgo">Apply</button><button class="btn ghost" id="tcsv">⬇ CSV</button></div></div>`);
+  const kpi=el(`<div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>`);
+  const list=el(`<div class="card"></div>`);
+  main.append(kpi,f,list);
+  const params=()=>({category:f.querySelector("#tc").value,device_id:f.querySelector("#td").value,
+    date_from:f.querySelector("#tf").value,date_to:f.querySelector("#tt").value,q:f.querySelector("#tq").value.trim()});
+  const load=async()=>{
+    list.innerHTML=`<div class="muted">Loading…</div>`;
+    const r=await api("/api/tracking/events"+qp({...params(),limit:500}));
+    kpi.innerHTML="";
+    Object.entries(TRK_CAT).forEach(([k,[label,color]])=>kpi.appendChild(el(`<div class="card" style="border-left:4px solid ${color}">
+      <div class="muted" style="font-size:12px">${esc(label)} · last 24 h</div><div style="font-size:26px;font-weight:700">${r.last24h[k]||0}</div></div>`)));
+    list.innerHTML=`<h3 style="margin:0 0 10px">${r.total} event${r.total===1?"":"s"}${r.total>r.events.length?` (showing newest ${r.events.length})`:""}</h3>`;
+    if(!r.events.length){ list.appendChild(el(`<p class="muted">No events yet. Events arrive from each computer every sync interval set in its tracking profile (see <a href="#tracking/profiles">Profiles</a>).</p>`)); return; }
+    list.appendChild(tableFrom(["When","Computer","User","Event","Details","File","Target"],
+      r.events.map(e=>{ const c=TRK_CAT[e.category]||[e.category,"#94a3b8"];
+        return [fmtUtc(e.ts),esc(e.hostname),esc(e.user||"—"),
+          `<span class="badge" style="background:${c[1]}22;color:${c[1]};border:1px solid ${c[1]}66">${esc(TRK_EVT[e.event_type]||e.event_type)}</span>`,
+          `<span style="white-space:pre-wrap">${esc(e.detail||"")}</span>`,
+          e.file_name?`${esc(e.file_name)}<div class="muted" style="font-size:11px">${fmtSize(e.file_size)}</div>`:"",
+          esc(e.target||"")]; })));
+  };
+  f.querySelector("#tgo").onclick=()=>load().catch(e=>toast(e.message,true));
+  f.querySelector("#tq").addEventListener("keydown",e=>{ if(e.key==="Enter") f.querySelector("#tgo").click(); });
+  f.querySelector("#tcsv").onclick=()=>downloadWithAuth("/api/tracking/events.csv"+qp(params()),"tracking_events.csv");
+  await load();
+}
+
+async function trackingProfiles(main){
+  const [r,devs]=await Promise.all([api("/api/tracking/profiles"+qp()),api("/api/tracking/devices"+qp())]);
+  const add=el(`<button class="btn sm">+ New profile</button>`); add.onclick=()=>editTrackingProfile(null,r.defaults,main);
+  const head=el(`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div class="muted">A profile sets which trackers run, which file types are watched and how often events are sent. Each computer uses its assigned profile, otherwise the <b>default</b>.</div></div>`);
+  head.appendChild(add); main.appendChild(head);
+  const on=(v)=>v?`<span class="badge b-ok">on</span>`:`<span class="badge b-off">off</span>`;
+  const pc=el(`<div class="card" style="margin-bottom:16px"></div>`);
+  pc.appendChild(tableFrom(["Profile","Logins","Network","Wi-Fi","USB files","Email files","File types","Sync every","Computers","Actions"],
+    r.profiles.map(p=>{ const s=p.settings;
+      return [`<b>${esc(p.name)}</b>${p.is_default?' <span class="badge b-ok">default</span>':""}${p.description?`<div class="muted" style="font-size:11px">${esc(p.description)}</div>`:""}`,
+        on(s.logins),on(s.network),on(s.wifi),on(s.usb_files),on(s.email_files),
+        `<span class="muted" style="font-size:12px">${esc((s.file_types||[]).join(" "))}</span>`,
+        esc((TRK_SYNC.find(x=>x[0]===s.sync_interval)||[0,s.sync_interval+" s"])[1]),p.devices,
+        `<button class="btn sm ghost" data-ed="${p.id}">Edit</button> <button class="btn sm ghost" data-as="${p.id}">Assign computers</button>`+
+        (p.is_default?"":` <button class="btn sm ghost" data-df="${p.id}">Make default</button> <button class="btn sm danger" data-rm="${p.id}">Delete</button>`)]; })));
+  main.appendChild(pc);
+  pc.querySelectorAll("[data-ed]").forEach(b=>b.onclick=()=>editTrackingProfile(r.profiles.find(p=>p.id===b.dataset.ed),r.defaults,main));
+  pc.querySelectorAll("[data-as]").forEach(b=>b.onclick=()=>assignTrackingProfile(r.profiles.find(p=>p.id===b.dataset.as),devs,main));
+  pc.querySelectorAll("[data-df]").forEach(b=>b.onclick=async()=>{ if(!confirm("Make this the company default? Computers without their own profile will use it.")) return;
+    try{ await api(`/api/tracking/profiles/${b.dataset.df}/default`+qp(),{method:"POST"}); toast("Default profile changed"); route(); }catch(e){ toast(e.message,true); } });
+  pc.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{ if(!confirm("Delete this profile? Its computers go back to the default profile.")) return;
+    try{ await api(`/api/tracking/profiles/${b.dataset.rm}`+qp(),{method:"DELETE"}); toast("Profile deleted"); route(); }catch(e){ toast(e.message,true); } });
+  main.appendChild(cardTable("Computers and their profile",["Computer","Department","Location","Last seen","Profile"],
+    devs.map(d=>[esc(d.hostname),esc(d.department||"—"),esc(d.location||"—"),fmtUtc(d.last_seen),
+      `${esc(d.profile_name)}${d.uses_default?' <span class="muted" style="font-size:11px">(default)</span>':""}`])));
+}
+
+function editTrackingProfile(p, defaults, main){
+  const s=p?p.settings:defaults;
+  const body=el(`<div style="max-width:620px">
+    <div class="field"><label>Profile name</label><input id="pn" value="${esc(p?p.name:"")}" placeholder="e.g. Finance – strict"/></div>
+    <div class="field"><label>Description (optional)</label><input id="pd" value="${esc(p&&p.description||"")}"/></div>
+    <div class="field"><label>Trackers</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px">
+      ${[["logins","Logins — logon/logoff, lock/unlock, startup/shutdown, sleep/wake"],["network","Network — adapters, IP changes, internet lost/restored"],
+         ["wifi","Wi-Fi — connected/disconnected, network name, signal"],["usb_files","USB — drives inserted/removed, tracked files copied to/from USB"],
+         ["email_files","Email — tracked files sent from Outlook, or attached in webmail (best effort)"],["alert_on_transfer","Raise an alert when a tracked file leaves by USB or email"]]
+        .map(([k,t])=>`<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" data-k="${k}" ${s[k]?"checked":""}/> <span>${esc(t)}</span></label>`).join("")}</div></div>
+    <div class="field"><label>Tracked file types (used by USB and email tracking)</label><input id="pt" value="${esc((s.file_types||[]).join(", "))}"/>
+      <div class="muted" style="font-size:11px">Comma-separated, e.g. .xlsx, .pdf, .docx, .zip</div></div>
+    <div class="field"><label>Send events to the server every</label><select id="ps">${TRK_SYNC.map(([v,t])=>`<option value="${v}" ${v===s.sync_interval?"selected":""}>${t}</option>`).join("")}</select></div>
+    <p class="muted" style="font-size:12px">Only metadata is recorded (file name, type, size, time, USB drive, Wi-Fi name, email recipients and subject) — never file contents or email text. Computers pick up changes at their next check-in (about a minute).</p></div>`);
+  modal(p?`Edit profile — ${p.name}`:"New tracking profile",body,async()=>{
+    const settings={file_types:body.querySelector("#pt").value,sync_interval:+body.querySelector("#ps").value};
+    body.querySelectorAll("[data-k]").forEach(c=>settings[c.dataset.k]=c.checked);
+    const payload={name:body.querySelector("#pn").value.trim(),description:body.querySelector("#pd").value.trim()||null,settings};
+    if(!payload.name) throw new Error("Enter a profile name");
+    await api(p?`/api/tracking/profiles/${p.id}`+qp():"/api/tracking/profiles"+qp(),{method:p?"PUT":"POST",body:payload});
+    toast(p?"Profile saved":"Profile created"); location.hash="tracking/profiles"; route();
+  },p?"Save":"Create");
+}
+
+function assignTrackingProfile(p, devs, main){
+  const body=el(`<div style="max-width:620px"><p class="muted">Tick the computers that should use <b>${esc(p.name)}</b>.${p.is_default?" (This is the default profile: ticked computers go back to following the default.)":""}</p>
+    <div style="margin-bottom:8px"><label><input type="checkbox" id="all"/> Select all</label></div>
+    <div style="max-height:360px;overflow:auto">${devs.length?devs.map(d=>`<label style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border,#334155)">
+      <input type="checkbox" value="${d.id}" ${d.profile_id===p.id?"checked":""}/> <span style="flex:1">${esc(d.hostname)} <span class="muted" style="font-size:11px">${esc(d.department||"")}</span></span>
+      <span class="muted" style="font-size:12px">now: ${esc(d.profile_name)}</span></label>`).join(""):'<p class="muted">No computers enrolled yet.</p>'}</div></div>`);
+  body.querySelector("#all").onchange=(e)=>body.querySelectorAll("input[value]").forEach(c=>c.checked=e.target.checked);
+  modal(`Assign computers — ${p.name}`,body,async()=>{
+    const ids=[...body.querySelectorAll("input[value]:checked")].map(c=>c.value);
+    if(!ids.length) throw new Error("Tick at least one computer");
+    const r=await api(`/api/tracking/profiles/${p.id}/assign`+qp(),{method:"POST",body:{device_ids:ids}});
+    toast(`${r.assigned} computer(s) now use ${p.name}`); route();
+  },"Assign");
+}
 
 VIEWS.policies = async (main) => {
   main.innerHTML="";

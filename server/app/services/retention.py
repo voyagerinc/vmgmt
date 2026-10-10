@@ -6,7 +6,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from ..models import ActivityEvent, Evidence, HealthMetric, Tenant
+from ..models import ActivityEvent, Evidence, HealthMetric, Tenant, TrackingEvent
 
 
 def purge_expired_evidence(db: Session) -> int:
@@ -34,5 +34,8 @@ def purge_old_events(db: Session) -> int:
         ).delete(synchronize_session=False)
         total += db.query(HealthMetric).filter(
             HealthMetric.tenant_id == t.id, HealthMetric.ts < cutoff
+        ).delete(synchronize_session=False)
+        total += db.query(TrackingEvent).filter(
+            TrackingEvent.tenant_id == t.id, TrackingEvent.ts < cutoff
         ).delete(synchronize_session=False)
     return total

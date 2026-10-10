@@ -30,6 +30,7 @@ from .routers import (
     reports,
     settings as settings_router,
     system as system_router,
+    tracking as tracking_router,
     users,
 )
 from .services import alert_engine, license_sync, retention, scheduled_reports
@@ -182,7 +183,7 @@ async def security_headers(request: Request, call_next):
 
 # API routers
 for r in (auth, portal, users, agents, devices, directory, inventory, policies, alerts,
-          evidence, reports, settings_router, downloads, system_router):
+          evidence, reports, settings_router, downloads, system_router, tracking_router):
     app.include_router(r.router)
 
 

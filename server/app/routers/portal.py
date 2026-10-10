@@ -22,6 +22,8 @@ from ..models import (
     Employee,
     EnrollmentToken,
     FileEvent,
+    TrackingEvent,
+    TrackingProfile,
     HealthMetric,
     License,
     LicenseEdition,
@@ -146,6 +148,8 @@ def delete_tenant(tenant_id: str, request: Request, db: Session = Depends(get_db
     db.query(Policy).filter(Policy.tenant_id == tenant_id).delete(synchronize_session=False)
     db.query(ActivityEvent).filter(ActivityEvent.tenant_id == tenant_id).delete(synchronize_session=False)
     db.query(FileEvent).filter(FileEvent.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(TrackingEvent).filter(TrackingEvent.tenant_id == tenant_id).delete(synchronize_session=False)
+    db.query(TrackingProfile).filter(TrackingProfile.tenant_id == tenant_id).delete(synchronize_session=False)
     db.query(HealthMetric).filter(HealthMetric.tenant_id == tenant_id).delete(synchronize_session=False)
     db.query(Device).filter(Device.tenant_id == tenant_id).delete(synchronize_session=False)
     db.query(Employee).filter(Employee.tenant_id == tenant_id).delete(synchronize_session=False)

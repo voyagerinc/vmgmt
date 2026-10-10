@@ -21,7 +21,7 @@ import requests
 
 import collectors
 
-__version__ = "4.1.0"
+__version__ = "4.2.0"
 
 STATE_DIR = Path(os.environ.get("PROGRAMDATA", str(Path.home()))) / "EndpointAgent"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +58,14 @@ class Agent:
         self._last_software_push = 0.0
         self._last_interval_shot = 0.0
         self._activity_buf: list[dict] = []
+        # logins / network+Wi-Fi / USB / email trackers, configured by the server's tracking profile
+        self.tracker = None
+        if os.name == "nt":
+            try:
+                import trackers
+                self.tracker = trackers.EventTracker(STATE_DIR, self._send_events)
+            except Exception as e:
+                log.warning("Trackers unavailable: %s", e)
 
     # ------------------------------------------------------------- state
     def _load_state(self) -> dict:
@@ -168,8 +176,29 @@ class Agent:
                 break
             self.offline_queue.popleft()
 
+    def _send_events(self, events: list[dict]) -> dict | None:
+        """Upload a batch of tracker events; None keeps them queued for the next sync."""
+        if not self.enrolled:
+            return None
+        try:
+            r = self.session.post(f"{self.server}/api/agents/events", json={"events": events},
+                                  headers=self._auth_headers(), timeout=60)
+        except requests.RequestException as e:
+            log.warning("Event sync failed (kept for next sync): %s", e)
+            return None
+        if not r.ok:
+            log.warning("Event sync error %s: %s", r.status_code, r.text[:200])
+            return None
+        log.info("Synced %d tracking event(s)", len(events))
+        return r.json()
+
     def _handle_response(self, resp: dict) -> None:
         self.heartbeat_interval = resp.get("heartbeat_interval", self.heartbeat_interval)
+        if resp.get("tracking") and self.tracker:
+            self.tracker.apply(resp["tracking"])
+            if resp["tracking"] != self.state.get("tracking"):
+                self.state["tracking"] = resp["tracking"]
+                self._save_state()
         if resp.get("collection"):
             self.collection = resp["collection"]
             self.state["collection"] = self.collection
@@ -274,6 +303,8 @@ class Agent:
         log.info("Agent %s starting on %s", __version__, platform.platform())
         signal.signal(signal.SIGINT, self._stop)
         signal.signal(signal.SIGTERM, self._stop)
+        if self.tracker and self.state.get("tracking"):
+            self.tracker.apply(self.state["tracking"])      # last known profile, before 1st heartbeat
         while self._running:
             self._flush_queue()
             resp = self._post_heartbeat(self._build_heartbeat())
@@ -285,10 +316,14 @@ class Agent:
                 slept += 1
                 if self._interval_capture_due():
                     self._interval_capture()
+                if self.tracker:
+                    self.tracker.maybe_flush()
 
     def _stop(self, *_):
         log.info("Agent stopping")
         self._running = False
+        if self.tracker:
+            self.tracker.stop()
 
 
 FROZEN = getattr(sys, "frozen", False)
@@ -509,6 +544,11 @@ def main() -> int:
     ap.add_argument("--reenroll", action="store_true", help="Force re-enrollment")
     args = ap.parse_args()
 
+    if not args.server and STATE_FILE.exists():
+        try:                       # already enrolled: keep using the saved server (e.g. after self-update)
+            args.server = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("server")
+        except Exception:
+            pass
     if not args.server:
         log.error("No server URL. Provide --server or a bundled agent_config.json.")
         if FROZEN:

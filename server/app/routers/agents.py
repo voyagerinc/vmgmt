@@ -30,6 +30,7 @@ from ..models import (
 from ..schemas import AgentEnrollIn, AgentEnrollOut, HeartbeatIn, HeartbeatOut
 from ..security import encrypt_bytes, sha256_hex, sign_job
 from ..services import alert_engine
+from ..services import tracking as trk
 from ..services import license_service as lic_svc
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -196,11 +197,24 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         policy_version=device.policy_version,
         policies=policies_payload,
         collection=device.collection or {},
+        tracking=trk.agent_payload(db, device),
         agent_update=_agent_update_offer(body.agent_version),
         screenshot_jobs=job_payloads,
         remote_sessions=sess_payloads,
         server_time=_now(),
     )
+
+
+@router.post("/events")
+def agent_events(body: dict, device: Device = Depends(get_agent_device), db: Session = Depends(get_db)):
+    """Batched tracker events (logins, network/Wi-Fi, USB, email), sent every sync interval."""
+    events = body.get("events") or []
+    if not isinstance(events, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "events must be a list")
+    n = trk.record_events(db, device, [e for e in events if isinstance(e, dict)])
+    device.last_seen = _now()
+    db.commit()
+    return {"ok": True, "stored": n, "tracking": trk.agent_payload(db, device)}
 
 
 def _agent_update_offer(current: str | None) -> dict | None:

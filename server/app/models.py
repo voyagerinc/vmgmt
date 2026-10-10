@@ -254,6 +254,8 @@ class Device(Base):
         "email": False, "website": False, "keystrokes": False, "usb": False,
         "active_time": True, "screenshot_interval": 0,
     })
+    # Tracking profile (logins/network/USB/email trackers); None = the company's default profile.
+    tracking_profile_id: Mapped[str | None] = mapped_column(String(32))
 
 
 class Asset(Base):
@@ -352,6 +354,41 @@ class FileEvent(Base):
     classification: Mapped[str | None] = mapped_column(String(60))
     rule_action: Mapped[str | None] = mapped_column(String(30))  # alert/log/quarantine/block
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class TrackingProfile(Base):
+    """A named set of trackers (logins, network/Wi-Fi, USB files, email files), tracked file
+    types and the event sync interval. Assigned to computers; one profile is the company default."""
+    __tablename__ = "tracking_profiles"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(Text)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TrackingEvent(Base):
+    """Login / network / USB / email events reported by the agent's trackers (metadata only)."""
+    __tablename__ = "tracking_events"
+    __table_args__ = (Index("ix_tracking_tenant_time", "tenant_id", "ts"),
+                      Index("ix_tracking_device_time", "device_id", "ts"))
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    category: Mapped[str] = mapped_column(String(20))        # login | network | usb | email
+    event_type: Mapped[str] = mapped_column(String(40))      # logon, wifi_connected, copied_to_usb...
+    user: Mapped[str | None] = mapped_column(String(120))    # Windows account on the PC
+    detail: Mapped[str | None] = mapped_column(Text)         # one-line human description
+    file_name: Mapped[str | None] = mapped_column(String(400))
+    file_ext: Mapped[str | None] = mapped_column(String(20))
+    file_size: Mapped[int | None] = mapped_column(Integer)
+    target: Mapped[str | None] = mapped_column(String(400))  # USB drive / recipients / Wi-Fi name
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # --------------------------------------------------------------------------- policy & alerts

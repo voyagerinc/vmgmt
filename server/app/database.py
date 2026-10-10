@@ -61,6 +61,7 @@ _COLUMN_MIGRATIONS = [
     ("tenants", "client_server_updated_at", "DATETIME", "NULL"),
     ("tenants", "last_sync_at", "DATETIME", "NULL"),
     ("licenses", "branch_name", "VARCHAR(120)", "NULL"),
+    ("devices", "tracking_profile_id", "VARCHAR(32)", "NULL"),
 ]
 
 
