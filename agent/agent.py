@@ -21,7 +21,7 @@ import requests
 
 import collectors
 
-__version__ = "4.4.0"
+__version__ = "4.5.0"
 
 
 def _stamped_version() -> str:
@@ -149,6 +149,7 @@ class Agent:
         # Only collect what the server's per-agent profile enables (data minimization).
         body: dict = {"agent_version": AGENT_VERSION, "ip_address": collectors.primary_ip(),
                       "policy_version": self.policy_version, "activity": [], "file_events": []}
+        body.update(_session_users())
         if self.collection.get("health", True):
             body["health"] = collectors.health()
         if self.collection.get("active_time", True) and body.get("health"):
@@ -469,6 +470,79 @@ def _stop_running_copies(dest_exe: Path) -> None:
 UPDATER_TASK = "VoyagerAgentUpdater"
 
 
+def _session_users() -> dict:
+    """The Windows account running this agent session + every account signed in on the PC."""
+    dom, name = os.environ.get("USERDOMAIN", ""), os.environ.get("USERNAME", "")
+    cur = f"{dom}\\{name}" if dom and name else name
+    users = []
+    try:
+        import psutil
+        users = sorted({u.name for u in psutil.users() if u.name})
+    except Exception:
+        pass
+    return {"current_user": cur or None, "users": users}
+
+
+# Official admin policies that turn off private windows (Chrome/Edge/Brave/Firefox). Applied by the
+# SYSTEM task / installer (needs admin). Removed again only if this agent set them (machine.json).
+_PRIVATE_BROWSING_POLICIES = [
+    (r"SOFTWARE\Policies\Google\Chrome", "IncognitoModeAvailability"),
+    (r"SOFTWARE\Policies\Microsoft\Edge", "InPrivateModeAvailability"),
+    (r"SOFTWARE\Policies\BraveSoftware\Brave", "IncognitoModeAvailability"),
+    (r"SOFTWARE\Policies\Mozilla\Firefox", "DisablePrivateBrowsing"),
+]
+
+
+def apply_browser_policies(block: bool, meta: dict) -> bool:
+    """Block (or un-block) Incognito/InPrivate/Private windows. Returns True if meta changed."""
+    import winreg
+    was = bool(meta.get("private_browsing_blocked"))
+    if block == was and not block:
+        return False
+    for key, name in _PRIVATE_BROWSING_POLICIES:
+        try:
+            if block:
+                with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, key, 0,
+                                        winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+                    winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, 1)
+            elif was:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0,
+                                    winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as k:
+                    winreg.DeleteValue(k, name)
+        except OSError as e:
+            log.info("Browser policy %s\\%s: %s", key, name, e)
+    if block != was:
+        log.info("Private/incognito browsing %s", "blocked" if block else "allowed again")
+        meta["private_browsing_blocked"] = block
+        return True
+    return False
+
+
+def _sync_machine_policies(install_dir: Path, info: dict | None = None) -> None:
+    """Apply the machine policies of this computer's tracking profile (admin/SYSTEM only)."""
+    try:
+        meta = json.loads((install_dir / "machine.json").read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if info is None:
+        server = (meta.get("server") or "").rstrip("/")
+        if not server or not meta.get("device_id"):
+            return
+        try:
+            info = requests.get(f"{server}/api/updates/agent-info",
+                                params={"device_id": meta["device_id"]}, timeout=30).json()
+        except Exception:
+            return
+    pol = info.get("policies")
+    if pol is None:
+        return
+    if apply_browser_policies(bool(pol.get("block_private_browsing")), meta):
+        try:
+            (install_dir / "machine.json").write_text(json.dumps(meta), encoding="utf-8")
+        except OSError:
+            pass
+
+
 def vtuple(v) -> tuple:
     try:
         return tuple(int(x) for x in str(v).split(".")[:3])
@@ -557,6 +631,7 @@ def run_updater() -> int:
     except Exception as e:
         log.info("Updater: server not reachable (%s)", e)
         return 0
+    _sync_machine_policies(install_dir, info)            # e.g. block private/incognito browsing
     ver = info.get("version")
     if not info.get("available") or not ver or vtuple(ver) <= vtuple(installed):
         return 0
@@ -719,6 +794,8 @@ def main() -> int:
             return 3
         try:
             dest = _install(machine_wide, args.server, agent.state.get("device_id"))
+            if machine_wide:
+                _sync_machine_policies(dest.parent)       # apply the profile's browser policies now
         except Exception as e:
             log.error("Install failed: %s", e)
             _show_message(f"The agent is enrolled but could not be installed:\n{e}")

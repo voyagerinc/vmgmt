@@ -232,6 +232,8 @@ class DeviceOut(ORM):
     enrolled_at: datetime
     hardware: dict
     policy_version: int
+    current_user: str | None = None
+    logged_users: list | None = None
 
 
 class DevicePatch(BaseModel):
@@ -285,6 +287,8 @@ class FileEventItem(BaseModel):
 class HeartbeatIn(BaseModel):
     agent_version: str | None = None
     ip_address: str | None = None
+    current_user: str | None = None                 # Windows account (DOMAIN/user) of the reporting session
+    users: list[str] = Field(default_factory=list)   # all accounts signed in on the PC
     health: HealthItem | None = None
     activity: list[ActivityItem] = Field(default_factory=list)
     file_events: list[FileEventItem] = Field(default_factory=list)

@@ -24,6 +24,8 @@ DEFAULT_SETTINGS = {
     "email_files": False,    # tracked files sent from Outlook / attached in webmail (best effort)
     "app_activity": False,   # time spent per application/window (idle excluded)
     "web_activity": False,   # websites visited (browser history; URLs without query string)
+    "email_all": False,      # record EVERY email sent from Outlook (from/to/cc/bcc/subject/attachments)
+    "block_private_browsing": False,   # browser policies: disable Incognito/InPrivate/Private windows
     "file_types": DEFAULT_FILE_TYPES,
     "sync_interval": 300,    # seconds between event uploads
     "alert_on_transfer": True,   # raise an alert for tracked files leaving via USB/email
@@ -39,7 +41,7 @@ def normalize_settings(raw: dict | None, base: dict | None = None) -> dict:
     out = dict(base or DEFAULT_SETTINGS)
     raw = raw or {}
     for k in ("logins", "network", "wifi", "usb_files", "email_files", "alert_on_transfer",
-              "app_activity", "web_activity"):
+              "app_activity", "web_activity", "email_all", "block_private_browsing"):
         if k in raw:
             out[k] = bool(raw[k])
     if "file_types" in raw:
@@ -94,6 +96,13 @@ def agent_payload(db: Session, device: Device) -> dict:
             "version": int(p.updated_at.timestamp()) if p.updated_at else 0, **s}
 
 
+def mail_cols(meta: dict | None) -> list[str]:
+    """From / To / CC / BCC / Subject columns of an email event (blank for other events)."""
+    m = meta or {}
+    j = lambda v: "; ".join(v) if isinstance(v, list) else (v or "")      # noqa: E731
+    return [m.get("from") or "", j(m.get("to")), j(m.get("cc")), j(m.get("bcc")), m.get("subject") or ""]
+
+
 def _ts(v) -> datetime:
     if isinstance(v, datetime):
         dt = v
@@ -134,7 +143,9 @@ def record_events(db: Session, device: Device, events: list[dict]) -> int:
         )
         db.add(ev)
         n += 1
-        if prof.get("alert_on_transfer") and etype in _TRANSFER_EVENTS:
+        # emails: alert only when a tracked file type was attached (older agents: per-attachment events)
+        tracked_mail = etype != "email_sent" or meta.get("tracked_attachments", [True])
+        if prof.get("alert_on_transfer") and etype in _TRANSFER_EVENTS and tracked_mail:
             via = _TRANSFER_EVENTS[etype]
             db.add(Alert(
                 tenant_id=device.tenant_id, device_id=device.id,

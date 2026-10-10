@@ -62,6 +62,8 @@ _COLUMN_MIGRATIONS = [
     ("tenants", "last_sync_at", "DATETIME", "NULL"),
     ("licenses", "branch_name", "VARCHAR(120)", "NULL"),
     ("devices", "tracking_profile_id", "VARCHAR(32)", "NULL"),
+    ("devices", "current_user", "VARCHAR(120)", "NULL"),
+    ("devices", "logged_users", "JSON", "'[]'"),
 ]
 
 

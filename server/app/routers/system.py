@@ -205,12 +205,15 @@ def updates_agent_info(device_id: str | None = None, db: Session = Depends(get_d
     if settings.license_server:
         au.sync_from_license_server()                   # client server: pick up newer cloud builds
     info = au.exe_info(AGENT_EXE)
-    if not info:
-        return {"available": False}
-    out = {"available": True, **info}
+    out = {"available": True, **info} if info else {"available": False}
     if device_id:
         dev = db.get(Device, device_id)
-        out["approved"] = au.approved(db, dev, info["version"])
+        out["approved"] = bool(info) and au.approved(db, dev, info["version"])
+        if dev:                                         # machine policies the SYSTEM task enforces
+            from ..services import tracking as trk
+            s = trk.normalize_settings(trk.effective_profile(db, dev).settings)
+            out["policies"] = {"block_private_browsing": s["block_private_browsing"]}
+            db.commit()
     return out
 
 

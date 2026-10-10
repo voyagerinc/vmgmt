@@ -118,6 +118,9 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         device.agent_version = body.agent_version
     if body.ip_address:
         device.ip_address = body.ip_address
+    if body.current_user:
+        device.current_user = body.current_user[:120]
+        device.logged_users = sorted({u[:120] for u in body.users if u})[:20] or [device.current_user]
 
     prof = device.collection or {}
 

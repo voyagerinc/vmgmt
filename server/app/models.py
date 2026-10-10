@@ -256,6 +256,9 @@ class Device(Base):
     })
     # Tracking profile (logins/network/USB/email trackers); None = the company's default profile.
     tracking_profile_id: Mapped[str | None] = mapped_column(String(32))
+    # Windows account using the PC (reported by the agent each heartbeat) + all signed-in accounts
+    current_user: Mapped[str | None] = mapped_column(String(120))
+    logged_users: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class Asset(Base):

@@ -64,7 +64,8 @@ def device_names(db: Session, tid: str) -> dict:
     out = {}
     for d, emp in (db.query(Device, Employee.name).outerjoin(Employee, Employee.id == Device.employee_id)
                    .filter(Device.tenant_id == tid).all()):
-        out[d.id] = {"hostname": d.hostname, "employee": emp, "department": d.department}
+        out[d.id] = {"hostname": d.hostname, "employee": emp, "department": d.department,
+                     "current_user": d.current_user}
     return out
 
 
@@ -88,7 +89,8 @@ def computer_summary(db: Session, tid: str, start, end, device_id=None) -> list[
     rows = _filters(q, start, end, tid, device_id).group_by(ActivityEvent.device_id, kind).all()
     per: dict = {}
     for dev, k, secs, n, first, last in rows:
-        r = per.setdefault(dev, {"device_id": dev, **names.get(dev, {"hostname": dev, "employee": None, "department": None}),
+        r = per.setdefault(dev, {"device_id": dev, **names.get(dev, {"hostname": dev, "employee": None, "department": None,
+                                                                     "current_user": None}),
                                  "app_seconds": 0, "web_seconds": 0, "idle_seconds": 0, "web_visits": 0,
                                  "events": 0, "first": first, "last": last})
         if k == "app":
@@ -149,5 +151,6 @@ def events(db: Session, tid: str, start, end, device_id=None, kind: str | None =
         out.append({"ts": e.ts, "device_id": e.device_id, "hostname": n["hostname"], "employee": n.get("employee"),
                     "type": "web" if e.event_type in WEB_TYPES else ("idle" if e.event_type == "idle" else "app"),
                     "app": e.application, "domain": e.domain, "title": e.title, "seconds": secs,
-                    "url": (e.meta or {}).get("url")})
+                    "url": (e.meta or {}).get("url"), "user": (e.meta or {}).get("user"),
+                    "private": bool((e.meta or {}).get("private_window"))})
     return total, out

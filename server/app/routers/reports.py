@@ -118,20 +118,22 @@ def _report_rows(db: Session, tid: str, kind: str, device_id: str | None = None,
         rows = []
         for d in dq.order_by(Device.hostname).all():
             a, t = act.get(d.id, {}), tr.get(d.id, {})
-            rows.append([d.hostname, (names.get(d.id) or {}).get("employee") or "", d.department or "",
+            rows.append([d.hostname, d.current_user or "", (names.get(d.id) or {}).get("employee") or "", d.department or "",
                          _hm(a.get("app_seconds")), _hm(a.get("web_seconds")), _hm(a.get("idle_seconds")),
                          a.get("top_app") or "", a.get("top_site") or "", a.get("web_visits", 0),
                          t.get("logon", 0), t.get("copied_to_usb", 0) + t.get("copied_from_usb", 0),
                          t.get("email_sent", 0) + t.get("email_attached", 0), alerts.get(d.id, 0),
                          lt(d.last_seen), d.agent_version or ""])
-        return (["computer", "employee", "department", "app time", "web time", "idle time", "top app",
+        return (["computer", "current user", "employee", "department", "app time", "web time", "idle time", "top app",
                  "top website", "web visits", "logons", "USB file copies", "email files", "alerts",
                  "last seen", "agent"], rows)
     if kind == "activity":
         _, ev = ar.events(db, tid, start, end, device_id, None, None, limit=50000)
-        return (["time", "computer", "employee", "type", "application", "website", "title", "duration", "url"],
-                [[lt(e["ts"]), e["hostname"], e["employee"] or "", e["type"], e["app"] or "", e["domain"] or "",
-                  e["title"] or "", _hm(e["seconds"]), e["url"] or ""] for e in ev])
+        return (["time", "computer", "user", "employee", "type", "application", "website", "title", "duration",
+                 "url", "private window"],
+                [[lt(e["ts"]), e["hostname"], e["user"] or "", e["employee"] or "", e["type"], e["app"] or "",
+                  e["domain"] or "", e["title"] or "", _hm(e["seconds"]), e["url"] or "",
+                  "yes" if e["private"] else ""] for e in ev])
     if kind in ("app_usage", "web_usage"):
         rows = ar.usage(db, tid, "domain" if kind == "web_usage" else "application", start, end, device_id)
         return (["computer", "employee", "website" if kind == "web_usage" else "application", "time",
@@ -142,9 +144,12 @@ def _report_rows(db: Session, tid: str, kind: str, device_id: str | None = None,
         q = in_period(db.query(TrackingEvent).filter(TrackingEvent.tenant_id == tid), TrackingEvent.ts)
         if device_id:
             q = q.filter(TrackingEvent.device_id == device_id)
-        return (["time", "computer", "user", "category", "event", "detail", "file", "size", "target"],
+        from ..services.tracking import mail_cols
+        return (["time", "computer", "user", "category", "event", "detail", "file", "size", "target",
+                 "from", "to", "cc", "bcc", "subject"],
                 [[lt(e.ts), host(e.device_id), e.user or "", e.category, e.event_type, e.detail or "",
-                  e.file_name or "", e.file_size if e.file_size is not None else "", e.target or ""]
+                  e.file_name or "", e.file_size if e.file_size is not None else "", e.target or "",
+                  *mail_cols(e.meta)]
                  for e in q.order_by(TrackingEvent.ts.desc()).limit(50000)])
     if kind == "assets":
         rows = db.query(Asset).filter(Asset.tenant_id == tid).all()
@@ -155,8 +160,10 @@ def _report_rows(db: Session, tid: str, kind: str, device_id: str | None = None,
         q = db.query(Device).filter(Device.tenant_id == tid)
         if device_id:
             q = q.filter(Device.id == device_id)
-        return (["computer", "employee", "department", "os", "status", "ip", "last_seen", "agent_version"],
-                [[d.hostname, (names.get(d.id) or {}).get("employee") or "", d.department or "",
+        return (["computer", "current user", "signed-in users", "employee", "department", "os", "status", "ip",
+                 "last_seen", "agent_version"],
+                [[d.hostname, d.current_user or "", ", ".join(d.logged_users or []),
+                  (names.get(d.id) or {}).get("employee") or "", d.department or "",
                   f"{d.os_name or ''} {d.os_version or ''}".strip(), d.status.value,
                   d.ip_address or "", lt(d.last_seen), d.agent_version or ""] for d in q.order_by(Device.hostname)])
     if kind == "software":

@@ -171,10 +171,14 @@ class EventTracker:
     @staticmethod
     def _seg_item(seg) -> dict:
         app, title = seg[1], seg[2]
+        low = (title or "").lower()
+        meta = {"user": _user()}
+        if "inprivate" in low or "private browsing" in low or "incognito" in low:
+            meta["private_window"] = True                # Edge/Firefox mark private windows in the title
         return {"event_type": "idle" if app == "(idle)" else "app",
                 "application": None if app == "(idle)" else app,
                 "title": (title or "")[:400], "duration_seconds": int(seg[4]),
-                "ts": datetime.fromtimestamp(seg[3], timezone.utc).isoformat()}
+                "ts": datetime.fromtimestamp(seg[3], timezone.utc).isoformat(), "meta": meta}
 
     def _add_activity(self, item: dict) -> None:
         with self._act_lock:
@@ -296,7 +300,8 @@ class EventTracker:
                                 "title": (title or "")[:400],
                                 "duration_seconds": int((dur or 0) / 1e6),
                                 "ts": datetime.fromtimestamp(secs, timezone.utc).isoformat(),
-                                "meta": {"url": urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))[:500]}})
+                                "meta": {"url": urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))[:500],
+                                         "user": _user()}})
         if newest != last:
             self.cursor[key] = newest
             self._save_cursor()
@@ -676,7 +681,7 @@ class EventTracker:
         last_outlook = 0.0
         title_hist: list = []            # (time, exe, title) of recent foreground windows
         while not self._stop.wait(2):
-            if not self._on("email_files"):
+            if not (self._on("email_files") or self._on("email_all")):
                 continue
             fg = self._foreground()
             if fg:
@@ -762,8 +767,73 @@ class EventTracker:
             return out.value
         return None
 
+    # Outlook MAPI property tags
+    _PR_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"          # recipient SMTP address
+    _PR_ATT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"    # inline/embedded attachment
+
+    @staticmethod
+    def _addr(obj) -> str:
+        """SMTP address of a Recipient/AddressEntry, also for Exchange / Microsoft 365 users
+        (whose plain .Address is an internal X500 path)."""
+        try:
+            return obj.PropertyAccessor.GetProperty(EventTracker._PR_SMTP) or ""
+        except Exception:
+            pass
+        entry = getattr(obj, "AddressEntry", obj)
+        try:
+            u = entry.GetExchangeUser()
+            if u is not None and u.PrimarySmtpAddress:
+                return u.PrimarySmtpAddress
+        except Exception:
+            pass
+        try:
+            return entry.Address or ""
+        except Exception:
+            return ""
+
+    @classmethod
+    def _mail_details(cls, it) -> dict:
+        """From / To / CC / BCC (name + address), subject and every attachment of a sent mail."""
+        to, cc, bcc = [], [], []
+        for i in range(1, it.Recipients.Count + 1):
+            r = it.Recipients.Item(i)
+            addr = cls._addr(r)
+            name = getattr(r, "Name", "") or ""
+            who = f"{name} <{addr}>" if addr and name and name != addr else (addr or name)
+            {1: to, 2: cc, 3: bcc}.get(getattr(r, "Type", 1), to).append(who)
+        sender = ""
+        try:
+            acc = it.SendUsingAccount
+            sender = (acc.SmtpAddress if acc is not None else "") or ""
+        except Exception:
+            pass
+        if not sender:
+            try:
+                sender = cls._addr(it.Sender) if it.Sender is not None else ""
+            except Exception:
+                sender = ""
+        sender = sender or getattr(it, "SenderEmailAddress", "") or ""
+        atts = []
+        for j in range(1, it.Attachments.Count + 1):
+            a = it.Attachments.Item(j)
+            try:
+                inline = bool(a.PropertyAccessor.GetProperty(cls._PR_ATT_HIDDEN))
+            except Exception:
+                inline = False
+            atts.append({"name": getattr(a, "FileName", "") or getattr(a, "DisplayName", "") or "",
+                         "size": int(getattr(a, "Size", 0) or 0), "inline": inline})
+        return {"from": sender, "from_name": getattr(it, "SenderName", "") or "", "to": to, "cc": cc,
+                "bcc": bcc, "subject": (getattr(it, "Subject", "") or "")[:300], "attachments": atts,
+                "size": int(getattr(it, "Size", 0) or 0)}
+
+    @staticmethod
+    def _local_dt(t) -> datetime:
+        """Outlook returns local wall-clock times (pywin32 may label them UTC): read the fields."""
+        return datetime(t.year, t.month, t.day, t.hour, t.minute, t.second)
+
     def _check_outlook(self) -> None:
-        """Outlook desktop: sent items with tracked attachments (only if Outlook is running)."""
+        """Outlook desktop: emails sent from every account/mailbox (Sent Items). With
+        'email_all' every mail is recorded; otherwise only mails carrying a tracked file type."""
         import psutil
         if not any((p.info.get("name") or "").lower() == "outlook.exe"
                    for p in psutil.process_iter(["name"])):
@@ -772,40 +842,60 @@ class EventTracker:
         import win32com.client
         pythoncom.CoInitialize()
         try:
-            ol = win32com.client.GetActiveObject("Outlook.Application")
-            items = ol.GetNamespace("MAPI").GetDefaultFolder(5).Items     # olFolderSentMail
-            items.Sort("[SentOn]", True)
-            last = self.cursor.get("outlook_sent")
-            newest = last
-            if last is None:                                             # start now; no history
-                self.cursor["outlook_sent"] = datetime.now().isoformat()
-                self._save_cursor()
-                return
-            last_dt = datetime.fromisoformat(last)
-            for i, it in enumerate(items):
-                if i >= 100:
-                    break
+            ns = win32com.client.GetActiveObject("Outlook.Application").GetNamespace("MAPI")
+            stores = [ns.Stores.Item(i) for i in range(1, ns.Stores.Count + 1)]
+            for store in stores:
                 try:
-                    sent = datetime.fromisoformat(str(it.SentOn)[:19])
+                    folder = store.GetDefaultFolder(5)                      # olFolderSentMail
                 except Exception:
-                    continue
-                if sent <= last_dt:
-                    break
-                newest = max(newest, sent.isoformat())
-                att = it.Attachments
-                for j in range(1, att.Count + 1):
-                    a = att.Item(j)
-                    name = a.FileName or ""
-                    if not self._tracked(name):
-                        continue
-                    to = (it.To or "")[:380]
-                    self.emit("email", "email_sent", f"{name} sent by Outlook to {to}",
-                              file_name=name, file_ext=os.path.splitext(name)[1].lower(),
-                              file_size=getattr(a, "Size", None), target=to,
-                              ts=sent.astimezone(timezone.utc).isoformat(),
-                              meta={"subject": (it.Subject or "")[:200], "cc": (it.CC or "")[:200]})
-            if newest != last:
-                self.cursor["outlook_sent"] = newest
-                self._save_cursor()
+                    continue                                                # archive / public folders
+                self._scan_sent(folder, f"outlook:{getattr(store, 'DisplayName', 'default')}")
         finally:
             pythoncom.CoUninitialize()
+
+    def _scan_sent(self, folder, key: str) -> None:
+        last = self.cursor.get(key)
+        if last is None:                                                    # start now; no history
+            self.cursor[key] = datetime.now().isoformat(timespec="seconds")
+            self._save_cursor()
+            return
+        last_dt = datetime.fromisoformat(last)
+        newest = last_dt
+        items = folder.Items
+        items.Sort("[SentOn]", True)
+        for i in range(1, min(items.Count, 200) + 1):
+            it = items.Item(i)
+            try:
+                sent = self._local_dt(it.SentOn)
+            except Exception:
+                continue
+            if sent <= last_dt:
+                break
+            newest = max(newest, sent)
+            try:
+                d = self._mail_details(it)
+            except Exception as e:
+                log.info("Could not read a sent mail: %s", e)
+                continue
+            files = [a for a in d["attachments"] if not a["inline"]]
+            tracked = [a["name"] for a in files if self._tracked(a["name"])]
+            if not (self._on("email_all") or tracked):
+                continue
+            to_txt = "; ".join(d["to"])
+            parts = [f"From {d['from'] or '?'} to {to_txt or '?'}"]
+            if d["cc"]:
+                parts.append(f"CC {'; '.join(d['cc'])}")
+            if d["bcc"]:
+                parts.append(f"BCC {'; '.join(d['bcc'])}")
+            parts.append(f"Subject: {d['subject'] or '(no subject)'}")
+            parts.append(f"{len(files)} attachment(s)" + (f": {', '.join(a['name'] for a in files)}" if files else ""))
+            first = (tracked[0] if tracked else (files[0]["name"] if files else ""))
+            self.emit("email", "email_sent", " | ".join(parts)[:1900],
+                      file_name="; ".join(a["name"] for a in files)[:400] or None,
+                      file_ext=os.path.splitext(first)[1].lower() or None,
+                      file_size=sum(a["size"] for a in files) or None, target=to_txt[:400] or None,
+                      ts=sent.astimezone(timezone.utc).isoformat(),
+                      meta={**d, "account": key.split(":", 1)[1], "tracked_attachments": tracked})
+        if newest != last_dt:
+            self.cursor[key] = newest.isoformat(timespec="seconds")
+            self._save_cursor()

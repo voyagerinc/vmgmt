@@ -385,8 +385,9 @@ VIEWS.devices = async (main, args) => {
   async function load(){
     const rows=await api("/api/devices"+qp({q:search.value, status_filter:sel.value}));
     host.innerHTML="";
-    host.appendChild(tableFrom(["Hostname","OS","Status","IP","Agent","Last seen","Actions"],
+    host.appendChild(tableFrom(["Hostname","Current user","OS","Status","IP","Agent","Last seen","Actions"],
       rows.map(d=>[`<a href="#devices/${d.id}">${esc(d.hostname||"(unnamed)")}</a>`,
+        esc(d.current_user||"—")+((d.logged_users||[]).length>1?`<div class="muted" style="font-size:11px">also: ${esc(d.logged_users.filter(u=>u!==d.current_user).join(", "))}</div>`:""),
         esc((d.os_name||"")+" "+(d.os_version||"")), statusBadge(d.status), esc(d.ip_address||"—"),
         esc(d.agent_version||"—"), ago(d.last_seen),
         `<button class="btn sm ghost" data-ss="${d.id}">Screenshot</button> <button class="btn sm danger" data-rev="${d.id}">Revoke</button>`])));
@@ -566,8 +567,8 @@ VIEWS.activity = async (main) => {
       .forEach(([l,v,c])=>k.appendChild(el(`<div class="card" style="border-left:4px solid ${c}"><div class="muted" style="font-size:12px">${l}</div><div style="font-size:24px;font-weight:700">${v}</div></div>`)));
     body.appendChild(k);
     if(!one){
-      const ct=cardTable("By computer",["Computer","Employee","App time","Web time","Idle","Top application","Top website","Visits","Last activity",""],
-        r.computers.map(c=>[`<b>${esc(c.hostname)}</b>`,esc(c.employee||"—"),fmtHM(c.app_seconds),fmtHM(c.web_seconds),fmtHM(c.idle_seconds),
+      const ct=cardTable("By computer",["Computer","Current user","Employee","App time","Web time","Idle","Top application","Top website","Visits","Last activity",""],
+        r.computers.map(c=>[`<b>${esc(c.hostname)}</b>`,esc(c.current_user||"—"),esc(c.employee||"—"),fmtHM(c.app_seconds),fmtHM(c.web_seconds),fmtHM(c.idle_seconds),
           esc(c.top_app||"—"),esc(c.top_site||"—"),c.web_visits,fmtUtc(c.last),`<button class="btn sm ghost" data-dev="${c.device_id}">Details</button>`]));
       ct.querySelectorAll("[data-dev]").forEach(b=>b.onclick=()=>bar.setDevice(b.dataset.dev));
       body.appendChild(ct);
@@ -591,11 +592,11 @@ VIEWS.activity = async (main) => {
       if(reset){ offset=0; list.innerHTML=""; }
       const ev=await api("/api/activity/events"+qp({...params,kind:det.querySelector("[data-k]").value,q:det.querySelector("[data-q]").value.trim(),limit:200,offset}));
       if(reset){ list.innerHTML=`<div class="muted" style="margin-bottom:6px">${ev.total} event(s)</div>`;
-        list.appendChild(tableFrom(["When","Computer","Type","Application / Website","Title","Duration"],[])); }
+        list.appendChild(tableFrom(["When","Computer","User","Type","Application / Website","Title","Duration"],[])); }
       const tb=list.querySelector("tbody");
       if(reset && ev.events.length) tb.innerHTML="";          // drop the "No data" placeholder
       ev.events.forEach(e=>{ const tr=document.createElement("tr");
-        tr.innerHTML=`<td>${fmtUtc(e.ts)}</td><td>${esc(e.hostname)}</td><td>${e.type==="web"?'<span class="badge b-ok">web</span>':e.type==="idle"?'<span class="badge b-off">idle</span>':'<span class="badge b-pending">app</span>'}</td>
+        tr.innerHTML=`<td>${fmtUtc(e.ts)}</td><td>${esc(e.hostname)}</td><td>${esc(e.user||"—")}</td><td>${e.private?'<span class="badge b-high" title="Private / InPrivate window">🔒 private</span> ':""}${e.type==="web"?'<span class="badge b-ok">web</span>':e.type==="idle"?'<span class="badge b-off">idle</span>':'<span class="badge b-pending">app</span>'}</td>
           <td>${esc(e.domain||e.app||"—")}${e.url?`<div class="muted" style="font-size:11px;word-break:break-all">${esc(e.url)}</div>`:""}</td><td>${esc((e.title||"").slice(0,120))}</td><td>${fmtHM(e.seconds)}</td>`;
         tb.appendChild(tr); });
       offset+=ev.events.length; more.style.display=offset<ev.total?"":"none";
@@ -619,7 +620,7 @@ const TRK_EVT={logon:"Logged on",logoff:"Logged off",lock:"Locked",unlock:"Unloc
   adapter_up:"Adapter connected",adapter_down:"Adapter disconnected",ip_changed:"IP changed",internet_lost:"Internet lost",
   internet_restored:"Internet restored",status:"Network status",wifi_connected:"Wi-Fi connected",wifi_changed:"Wi-Fi changed",
   wifi_disconnected:"Wi-Fi disconnected",usb_inserted:"USB inserted",usb_removed:"USB removed",copied_to_usb:"Copied TO USB",
-  copied_from_usb:"Copied FROM USB",email_sent:"Sent (Outlook)",email_attached:"Attached in webmail"};
+  copied_from_usb:"Copied FROM USB",email_sent:"Email sent (Outlook)",email_attached:"Attached in webmail"};
 const fmtUtc=(s)=>{ if(!s) return "—"; const d=new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s)?s:s+"Z"); return isNaN(d)?"—":d.toLocaleString(); };
 const fmtSize=(b)=>b==null?"":b<1024?b+" B":b<1048576?(b/1024).toFixed(1)+" KB":(b/1048576).toFixed(1)+" MB";
 const TRK_SYNC=[[60,"1 minute"],[120,"2 minutes"],[300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1800,"30 minutes"],[3600,"1 hour"]];
@@ -656,20 +657,43 @@ async function trackingEvents(main){
     kpi.innerHTML="";
     Object.entries(TRK_CAT).forEach(([k,[label,color]])=>kpi.appendChild(el(`<div class="card" style="border-left:4px solid ${color}">
       <div class="muted" style="font-size:12px">${esc(label)} · last 24 h</div><div style="font-size:26px;font-weight:700">${r.last24h[k]||0}</div></div>`)));
+    list._events=r.events;
     list.innerHTML=`<h3 style="margin:0 0 10px">${r.total} event${r.total===1?"":"s"}${r.total>r.events.length?` (showing newest ${r.events.length})`:""}</h3>`;
     if(!r.events.length){ list.appendChild(el(`<p class="muted">No events yet. Events arrive from each computer every sync interval set in its tracking profile (see <a href="#tracking/profiles">Profiles</a>).</p>`)); return; }
     list.appendChild(tableFrom(["When","Computer","User","Event","Details","File","Target"],
       r.events.map(e=>{ const c=TRK_CAT[e.category]||[e.category,"#94a3b8"];
-        return [fmtUtc(e.ts),esc(e.hostname),esc(e.user||"—"),
+        const mailBtn=(e.category==="email"&&e.meta&&(e.meta.to||e.meta.subject))?` <button class="btn sm ghost" data-mail="${e.id}">View</button>`:"";
+        return [fmtUtc(e.ts)+mailBtn,esc(e.hostname),esc(e.user||"—"),
           `<span class="badge" style="background:${c[1]}22;color:${c[1]};border:1px solid ${c[1]}66">${esc(TRK_EVT[e.event_type]||e.event_type)}</span>`,
           `<span style="white-space:pre-wrap">${esc(e.detail||"")}</span>`,
           e.file_name?`${esc(e.file_name)}<div class="muted" style="font-size:11px">${fmtSize(e.file_size)}</div>`:"",
           esc(e.target||"")]; })));
   };
+  list.addEventListener("click",(ev)=>{ const b=ev.target.closest("[data-mail]"); if(!b) return;
+    const e=(list._events||[]).find(x=>x.id===b.dataset.mail); if(e) showMail(e); });
   f.querySelector("#tgo").onclick=()=>load().catch(e=>toast(e.message,true));
   f.querySelector("#tq").addEventListener("keydown",e=>{ if(e.key==="Enter") f.querySelector("#tgo").click(); });
   f.querySelector("#tcsv").onclick=()=>downloadWithAuth("/api/tracking/events.csv"+qp(params()),"tracking_events.csv");
   await load();
+}
+
+function showMail(e){
+  const m=e.meta||{}, L=(v)=>Array.isArray(v)?v:(v?[v]:[]);
+  const row=(k,v)=>`<tr><th style="text-align:left;width:120px;vertical-align:top">${k}</th><td style="word-break:break-word">${v}</td></tr>`;
+  const people=(v)=>L(v).length?L(v).map(x=>esc(x)).join("<br>"):'<span class="muted">—</span>';
+  const atts=L(m.attachments);
+  const body=el(`<div style="max-width:720px"><table>
+    ${row("Sent",esc(fmtUtc(e.ts)))}${row("Computer",esc(e.hostname)+" · "+esc(e.user||""))}
+    ${row("From",esc(m.from||"—")+(m.from_name?` <span class="muted">(${esc(m.from_name)})</span>`:""))}
+    ${row("To",people(m.to))}${row("CC",people(m.cc))}${row("BCC",people(m.bcc))}
+    ${row("Subject",esc(m.subject||"(no subject)"))}${m.account?row("Mailbox",esc(m.account)):""}
+    ${e.event_type==="email_attached"?row("Note","Attached in webmail — sending not confirmed; recipients are not visible to the agent."):""}
+  </table>
+  <h4 style="margin:14px 0 6px">Attachments (${atts.filter(a=>!a.inline).length})</h4></div>`);
+  body.appendChild(tableFrom(["File","Size","Tracked type"],
+    atts.map(a=>[esc(a.name)+(a.inline?' <span class="muted" style="font-size:11px">(inline image)</span>':""),fmtSize(a.size),
+      L(m.tracked_attachments).includes(a.name)?'<span class="badge b-high">tracked</span>':""])));
+  modal("Email details",body,null,"Close");
 }
 
 async function trackingProfiles(main){
@@ -679,10 +703,10 @@ async function trackingProfiles(main){
   head.appendChild(add); main.appendChild(head);
   const on=(v)=>v?`<span class="badge b-ok">on</span>`:`<span class="badge b-off">off</span>`;
   const pc=el(`<div class="card" style="margin-bottom:16px"></div>`);
-  pc.appendChild(tableFrom(["Profile","Logins","Network","Wi-Fi","USB files","Email files","Apps","Web","File types","Sync every","Computers","Actions"],
+  pc.appendChild(tableFrom(["Profile","Logins","Network","Wi-Fi","USB files","Email files","All email","Apps","Web","No private","File types","Sync every","Computers","Actions"],
     r.profiles.map(p=>{ const s=p.settings;
       return [`<b>${esc(p.name)}</b>${p.is_default?' <span class="badge b-ok">default</span>':""}${p.description?`<div class="muted" style="font-size:11px">${esc(p.description)}</div>`:""}`,
-        on(s.logins),on(s.network),on(s.wifi),on(s.usb_files),on(s.email_files),on(s.app_activity),on(s.web_activity),
+        on(s.logins),on(s.network),on(s.wifi),on(s.usb_files),on(s.email_files),on(s.email_all),on(s.app_activity),on(s.web_activity),on(s.block_private_browsing),
         `<span class="muted" style="font-size:12px">${esc((s.file_types||[]).join(" "))}</span>`,
         esc((TRK_SYNC.find(x=>x[0]===s.sync_interval)||[0,s.sync_interval+" s"])[1]),p.devices,
         `<button class="btn sm ghost" data-ed="${p.id}">Edit</button> <button class="btn sm ghost" data-as="${p.id}">Assign computers</button>`+
@@ -707,7 +731,7 @@ function editTrackingProfile(p, defaults, main){
     <div class="field"><label>Trackers</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px">
       ${[["logins","Logins — logon/logoff, lock/unlock, startup/shutdown, sleep/wake"],["network","Network — adapters, IP changes, internet lost/restored"],
          ["wifi","Wi-Fi — connected/disconnected, network name, signal"],["usb_files","USB — drives inserted/removed, tracked files copied to/from USB"],
-         ["email_files","Email — tracked files sent from Outlook, or attached in webmail (best effort)"],["app_activity","App activity — time spent per application/window (idle excluded)"],["web_activity","Web activity — websites visited (Chrome, Edge, Firefox…; URLs without query string)"],["alert_on_transfer","Raise an alert when a tracked file leaves by USB or email"]]
+         ["email_files","Email — tracked files sent from Outlook, or attached in webmail (best effort)"],["email_all","Track ALL emails sent from Outlook (from, to, cc, bcc, subject, attachments) — not only tracked files"],["block_private_browsing","Block private / incognito browsing (Chrome, Edge, Brave, Firefox) so all browsing is recorded — needs the agent installed for all users"],["app_activity","App activity — time spent per application/window (idle excluded)"],["web_activity","Web activity — websites visited (Chrome, Edge, Firefox…; URLs without query string)"],["alert_on_transfer","Raise an alert when a tracked file leaves by USB or email"]]
         .map(([k,t])=>`<label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" data-k="${k}" ${s[k]?"checked":""}/> <span>${esc(t)}</span></label>`).join("")}</div></div>
     <div class="field"><label>Tracked file types (used by USB and email tracking)</label><input id="pt" value="${esc((s.file_types||[]).join(", "))}"/>
       <div class="muted" style="font-size:11px">Comma-separated, e.g. .xlsx, .pdf, .docx, .zip</div></div>

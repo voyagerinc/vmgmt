@@ -143,6 +143,7 @@ def device_assignments(tenant_id: str | None = Query(None), db: Session = Depend
     names = {p.id: p.name for p in db.query(TrackingProfile).filter(TrackingProfile.tenant_id == tid).all()}
     rows = db.query(Device).filter(Device.tenant_id == tid).order_by(Device.hostname).all()
     return [{"id": d.id, "hostname": d.hostname, "department": d.department, "location": d.location,
+             "current_user": d.current_user, "logged_users": d.logged_users or [],
              "status": d.status.value if d.status else None, "last_seen": d.last_seen,
              "profile_id": d.tracking_profile_id or default.id,
              "profile_name": names.get(d.tracking_profile_id or default.id, default.name),
@@ -222,10 +223,10 @@ def export_events(tenant_id: str | None = Query(None), category: str | None = No
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Time (UTC)", "Computer", "User", "Category", "Event", "Detail", "File", "Type",
-                "Size (bytes)", "Target (USB / recipients / Wi-Fi)"])
+                "Size (bytes)", "Target (USB / recipients / Wi-Fi)", "From", "To", "CC", "BCC", "Subject"])
     for e, h in _event_query(db, tid, category, device_id, event_type, q, date_from, date_to).limit(50000):
         w.writerow([e.ts.strftime("%Y-%m-%d %H:%M:%S") if e.ts else "", h, e.user or "", e.category,
                     e.event_type, e.detail or "", e.file_name or "", e.file_ext or "",
-                    e.file_size if e.file_size is not None else "", e.target or ""])
+                    e.file_size if e.file_size is not None else "", e.target or "", *trk.mail_cols(e.meta)])
     return Response(content=buf.getvalue().encode("utf-8-sig"), media_type="text/csv",
                     headers={"Content-Disposition": 'attachment; filename="tracking_events.csv"'})
