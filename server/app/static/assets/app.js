@@ -79,8 +79,12 @@ function logout() {
 const el = (h) => { const t = document.createElement("template"); t.innerHTML = h.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
 function toast(msg, err=false){ const t=document.getElementById("toast"); t.textContent=msg; t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",3200); }
-function fmtDate(s){ if(!s) return "—"; const d=new Date(s); return isNaN(d)?"—":d.toLocaleString(); }
-function ago(s){ if(!s) return "never"; const d=(Date.now()-new Date(s))/1000; if(d<60)return Math.floor(d)+"s"; if(d<3600)return Math.floor(d/60)+"m"; if(d<86400)return Math.floor(d/3600)+"h"; return Math.floor(d/86400)+"d"; }
+// The server stores and sends times in UTC; values without a zone marker are UTC, never local.
+function parseTs(s){ if(!s) return null; if(s instanceof Date) return s; s=String(s);
+  if(/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d/.test(s) && !/([zZ]|[+-]\d\d:?\d\d)$/.test(s)) s=s.replace(" ","T")+"Z";
+  const d=new Date(s); return isNaN(d)?null:d; }
+function fmtDate(s){ const d=parseTs(s); return d?d.toLocaleString():"—"; }
+function ago(s){ const t=parseTs(s); if(!t) return "never"; const d=Math.max(0,(Date.now()-t)/1000); if(d<60)return Math.floor(d)+"s ago"; if(d<3600)return Math.floor(d/60)+"m ago"; if(d<86400)return Math.floor(d/3600)+"h ago"; return Math.floor(d/86400)+"d ago"; }
 function statusBadge(s){ const m={active:"b-ok",online:"b-ok",offline:"b-off",pending:"b-pending",revoked:"b-rev",inactive:"b-rev",suspended:"b-rev"}; return `<span class="badge ${m[s]||"b-off"}">${esc(s)}</span>`; }
 function sevBadge(s){ return `<span class="badge b-${esc(s)}">${esc(s)}</span>`; }
 
@@ -127,6 +131,8 @@ const NAV = [
   ["assets","Assets","▤"],
   ["software","Software","◉"],
   ["activity","Web / App Activity","◍"],
+  ["websites","Websites","🌐"],
+  ["email","Email","✉"],
   ["tracking","Tracking (Login/Network/USB/Email)","◷"],
   ["policies","Policies","⚙"],
   ["alerts","Alerts","⚑"],
@@ -134,6 +140,7 @@ const NAV = [
   ["remote","Remote Support","⤢"],
   ["reports","Reports","▭"],
   ["downloads","Downloads","⬇"],
+  ["repair","Agent Repair","🛠"],
   ["licenses","Licenses & Tenants","🔑"],
   ["audit","Audit Logs","❏"],
   ["settings","Settings","⋯"],
@@ -417,11 +424,11 @@ async function deviceDetail(main, id){
   const prof=d.collection||{};
   const CATS=[["health","Resource health (CPU/RAM/disk/battery)"],["active_time","Active-time tracking"],
     ["software","Installed software inventory"],["activity","Web / application activity"],
-    ["website","Website monitoring"],["email","Email monitoring"],["file_events","File / DLP events"],
-    ["usb","USB control"],["keystrokes","Keystroke logging (passwords skipped)"],["screenshots","Screenshots"]];
-  const ROADMAP=new Set(["email","usb","keystrokes"]);   // platform-side collector pending
+    ["website","Website monitoring"],["email","Email monitoring (all Outlook sent mail: from/to/cc/bcc/subject/attachments)"],["file_events","File / DLP events"],
+    ["usb","USB monitoring (drives + files copied to/from USB)"],["screenshots","Screenshots"]];
+  const ROADMAP=new Set();   // every switch here has a working collector
   const pc=el(`<div class="card" style="margin-top:14px"><h3 style="margin:0 0 6px">Data collection profile</h3>
-    <div class="muted" style="margin-bottom:10px">Choose what to collect from <b>${esc(dev.hostname)}</b>. Disabled categories are not gathered by the agent and won't appear here — applied on the agent's next sync. Items marked (soon) are configured here but their Windows-side collector is still in development.</div></div>`);
+    <div class="muted" style="margin-bottom:10px">Choose what to collect from <b>${esc(dev.hostname)}</b>. Disabled categories are not gathered by the agent and won't appear here — applied on the agent's next sync. These switches add to the computer's <a href="#tracking/profiles">tracking profile</a>.</div></div>`);
   const togg=el(`<div style="display:flex;flex-wrap:wrap;gap:14px"></div>`);
   const boxes={};
   CATS.forEach(([k,label])=>{ const w=el(`<label style="display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);padding:8px 12px;border-radius:8px;cursor:pointer"></label>`);
@@ -464,7 +471,8 @@ VIEWS.employees = async (main) => {
   main.appendChild(c);
 };
 
-VIEWS.assets = async (main) => {
+VIEWS.assets = async (main, args) => {
+  const tab=(args&&args[0])||"hardware";
   main.innerHTML="";
   const add=el(`<button class="btn sm">+ Asset</button>`);
   add.onclick=()=>{ const f=fields([
@@ -473,33 +481,169 @@ VIEWS.assets = async (main) => {
     {k:"name",label:"Name"},{k:"serial_no",label:"Serial no"},{k:"model",label:"Model"},
     {k:"lifecycle",label:"Lifecycle",type:"select",options:["planned","in_stock","assigned","in_repair","retired","disposed"]},
     {k:"department",label:"Department"},{k:"location",label:"Location"}]);
-    modal("Add asset",f,async()=>{ await api("/api/assets"+qp(),{method:"POST",body:f._values()}); toast("Asset added"); VIEWS.assets(main);});};
+    modal("Add asset",f,async()=>{ await api("/api/assets"+qp(),{method:"POST",body:f._values()}); toast("Asset added"); location.hash="assets/register"; route();});};
   main.appendChild(topbar("Assets",[add]));
-  const rows=await api("/api/assets"+qp());
+  main.appendChild(el(`<div class="toolbar" style="margin-bottom:14px">
+    <a class="btn sm ${tab==="hardware"?"":"ghost"}" href="#assets/hardware">Computer hardware</a>
+    <a class="btn sm ${tab==="register"?"":"ghost"}" href="#assets/register">Asset register</a></div>`));
+  if(tab==="register"){
+    const rows=await api("/api/assets"+qp());
+    const c=el(`<div class="card"></div>`);
+    c.appendChild(tableFrom(["Tag","Category","Name","Serial","Lifecycle","Warranty"],
+      rows.map(a=>[esc(a.asset_tag),esc(a.category),esc(a.name||"—"),esc(a.serial_no||"—"),`<span class="pill">${esc(a.lifecycle)}</span>`,a.warranty_expiry?fmtDate(a.warranty_expiry):"—"])));
+    main.appendChild(c); return;
+  }
+  const rows=await api("/api/hardware"+qp());
+  const exp=el(`<div class="toolbar" style="margin-bottom:10px;gap:10px"></div>`);
+  exp.appendChild(exportButtons("hardware","Hardware report",()=>({})));
+  main.appendChild(exp);
+  const gbs=(v)=>v==null?"—":`${v} GB`;
   const c=el(`<div class="card"></div>`);
-  c.appendChild(tableFrom(["Tag","Category","Name","Serial","Lifecycle","Warranty"],
-    rows.map(a=>[esc(a.asset_tag),esc(a.category),esc(a.name||"—"),esc(a.serial_no||"—"),`<span class="pill">${esc(a.lifecycle)}</span>`,a.warranty_expiry?fmtDate(a.warranty_expiry):"—"])));
+  c.appendChild(tableFrom(["Computer","Current user","Make / model","Serial","CPU","RAM","Disks","C: free","OS","Last boot",""],
+    rows.map(d=>{ const h=d.hardware||{}; const disks=(h.disks||[]).map(x=>`${x.gb??"?"} GB ${x.type&&x.type!=="Unknown"?x.type:""}`.trim()).join(", ");
+      const c0=(h.volumes||[]).find(v=>v.drive==="C:");
+      return [`<b>${esc(d.hostname)}</b><div class="muted" style="font-size:11px">${statusBadge(d.status)} ${esc(d.ip_address||"")}</div>`,
+        esc(d.current_user||"—"),esc([h.manufacturer,h.model].filter(Boolean).join(" ")||"—"),esc(h.serial||"—"),
+        esc(h.cpu||"—")+(h.cores?`<div class="muted" style="font-size:11px">${h.cores} cores / ${h.threads||h.cores} threads</div>`:""),
+        gbs(h.ram_gb),esc(disks||(h.disk_gb?h.disk_gb+" GB":"—")),
+        c0?`${c0.free_gb} of ${c0.gb} GB`:"—",esc(h.os||"—"),esc(h.last_boot||"—"),
+        `<button class="btn sm ghost" data-hw="${d.id}">Details</button>`]; })));
+  c.querySelectorAll("[data-hw]").forEach(b=>b.onclick=()=>showHardware(rows.find(x=>x.id===b.dataset.hw)));
   main.appendChild(c);
+  if(rows.length&&!rows.some(d=>(d.hardware||{}).serial)) main.appendChild(el(`<div class="notice" style="margin-top:10px">Full hardware details (model, serial, memory, disks, GPU…) arrive from agent 4.6 or newer — update agents in Settings → Agent updates.</div>`));
 };
+function showHardware(d){
+  const h=d.hardware||{}, r=(k,v)=>`<tr><th style="text-align:left;width:150px">${k}</th><td>${v??"—"}</td></tr>`;
+  const body=el(`<div style="max-width:780px"><table>
+    ${r("Computer",esc(d.hostname))}${r("Current user",esc(d.current_user||"—"))}${r("Manufacturer / model",esc([h.manufacturer,h.model].filter(Boolean).join(" ")))}
+    ${r("Serial number",esc(h.serial))}${r("BIOS",esc([h.bios,h.bios_date].filter(Boolean).join(" · ")))}${r("Motherboard",esc(h.board))}
+    ${r("CPU",esc(h.cpu)+(h.cores?` · ${h.cores} cores / ${h.threads||h.cores} threads`:"")+(h.cpu_mhz?` · ${h.cpu_mhz} MHz`:""))}
+    ${r("RAM",h.ram_gb!=null?h.ram_gb+" GB":"—")}${r("Operating system",esc([h.os,h.os_build?"build "+h.os_build:""].filter(Boolean).join(" · ")))}
+    ${r("Windows installed",esc(h.os_installed))}${r("Last boot",esc(h.last_boot))}${r("Domain / workgroup",esc(h.domain))}
+    ${r("Inventory collected",esc(h.collected_at))}</table></div>`);
+  const sec=(t,hd,rows)=>{ body.appendChild(el(`<h4 style="margin:14px 0 6px">${t}</h4>`)); body.appendChild(tableFrom(hd,rows)); };
+  sec("Memory modules",["Slot","Size","Speed","Maker","Part"],(h.memory_modules||[]).map(m=>[esc(m.slot),m.gb!=null?m.gb+" GB":"—",m.speed?m.speed+" MT/s":"—",esc(m.maker),esc(m.part)]));
+  sec("Physical disks",["Model","Size","Type","Interface","Serial"],(h.disks||[]).map(x=>[esc(x.model),x.gb!=null?x.gb+" GB":"—",esc(x.type),esc(x.interface),esc(x.serial)]));
+  sec("Drives",["Drive","Label","File system","Size","Free"],(h.volumes||[]).map(v=>[esc(v.drive),esc(v.label),esc(v.fs),v.gb!=null?v.gb+" GB":"—",v.free_gb!=null?v.free_gb+" GB":"—"]));
+  sec("Graphics",["Adapter","Driver"],(h.gpus||[]).map(g=>[esc(g.name),esc(g.driver)]));
+  sec("Network adapters",["Adapter","MAC","IP"],(h.network||[]).map(n=>[esc(n.name),esc(n.mac),esc(n.ip)]));
+  modal(`Hardware — ${d.hostname}`,body,null,"Close");
+}
 
 VIEWS.software = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Software inventory"));
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
   const bar=el(`<div class="toolbar"></div>`);
+  const dev=el(`<select><option value="">All computers</option>${devs.map(d=>`<option value="${d.id}">${esc(d.hostname)}</option>`).join("")}</select>`);
   const search=el(`<input placeholder="Search software..." />`);
   const sel=el(`<select><option value="">All</option><option value="block">Blocklisted</option><option value="allow">Allowlisted</option><option value="unknown">Unknown</option></select>`);
-  bar.append(search,sel); main.appendChild(bar);
+  bar.append(dev,search,sel);
+  bar.appendChild(exportButtons("software","Export",()=>({device_id:dev.value})));
+  main.appendChild(bar);
   const c=el(`<div class="card"></div>`); main.appendChild(c);
   async function load(){
-    const rows=await api("/api/software"+qp({q:search.value,list_status:sel.value}));
-    c.innerHTML="";
-    c.appendChild(tableFrom(["Name","Publisher","Version","Status","Action"],
-      rows.map(s=>[esc(s.name),esc(s.publisher||"—"),esc(s.version||"—"),
+    const rows=await api("/api/software"+qp({device_id:dev.value,q:search.value,list_status:sel.value}));
+    c.innerHTML=`<div class="muted" style="margin-bottom:8px">${rows.length} item(s)${dev.value?" on <b>"+esc(dev.selectedOptions[0].text)+"</b>":" on all computers"}</div>`;
+    c.appendChild(tableFrom(["Computer","Name","Publisher","Version","Status","Action"],
+      rows.map(s=>[esc(s.hostname||"—"),esc(s.name),esc(s.publisher||"—"),esc(s.version||"—"),
         s.list_status==="block"?`<span class="badge b-high">block</span>`:esc(s.list_status),
         `<button class="btn sm ghost" data-block="${s.id}">Block</button> <button class="btn sm ghost" data-allow="${s.id}">Allow</button>`])));
     c.querySelectorAll("[data-block]").forEach(b=>b.onclick=async()=>{await api(`/api/software/${b.dataset.block}/list-status?value=block`,{method:"POST"});toast("Blocklisted");load();});
     c.querySelectorAll("[data-allow]").forEach(b=>b.onclick=async()=>{await api(`/api/software/${b.dataset.allow}/list-status?value=allow`,{method:"POST"});toast("Allowlisted");load();});
   }
-  search.oninput=debounce(load,300); sel.onchange=load; load();
+  search.oninput=debounce(load,300); sel.onchange=load; dev.onchange=load; load();
+};
+
+VIEWS.websites = async (main) => {
+  main.innerHTML=""; main.appendChild(topbar("Websites — browsing by computer"));
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
+  let params={};
+  const bar=filterBar(devs,(p)=>{ params=p; load(); });
+  const exp=el(`<div class="toolbar" style="margin:-4px 0 14px;gap:14px;flex-wrap:wrap"></div>`);
+  exp.append(exportButtons("web_usage","Websites by computer",()=>params),exportButtons("activity","All visits (detailed)",()=>params));
+  const body=el(`<div></div>`); main.append(bar,exp,body);
+  const load=async()=>{
+    body.innerHTML=`<div class="muted">Loading…</div>`;
+    const [s,u]=await Promise.all([api("/api/activity/summary"+qp(params)),api("/api/activity/usage"+qp({...params,by:"domain"}))]);
+    body.innerHTML="";
+    if(!u.length){ body.appendChild(el(`<div class="notice">No website visits in this period. Website history is collected when <b>Web activity</b> is on in the computer's <a href="#tracking/profiles">tracking profile</a> (or "Website monitoring" on the computer's page). Private/incognito windows never write history — use <b>Block private / incognito browsing</b> in the profile.</div>`)); return; }
+    const k=el(`<div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px"></div>`);
+    [["Time on websites",fmtHM(s.totals.web_seconds)],["Visits",s.totals.web_visits],["Different websites",new Set(u.map(x=>x.name)).size]]
+      .forEach(([l,v])=>k.appendChild(el(`<div class="card"><div class="muted" style="font-size:12px">${l}</div><div style="font-size:24px;font-weight:700">${v}</div></div>`)));
+    body.appendChild(k);
+    body.appendChild(cardTable("Top websites",["Website","Time","Visits","Computers"],s.top_sites.map(x=>[esc(x.name),fmtHM(x.seconds),x.events,x.computers])));
+    body.appendChild(el(`<div style="height:14px"></div>`));
+    body.appendChild(cardTable("Websites by computer",["Computer","User","Website","Time","Visits","First","Last"],
+      u.map(x=>[esc(x.hostname),esc(x.current_user||"—"),esc(x.name),fmtHM(x.seconds),x.events,fmtDate(x.first),fmtDate(x.last)])));
+    const ev=await api("/api/activity/events"+qp({...params,kind:"web",limit:300}));
+    body.appendChild(el(`<div style="height:14px"></div>`));
+    body.appendChild(cardTable(`Visits (${ev.total}${ev.total>ev.events.length?", newest "+ev.events.length:""})`,["When","Computer","User","Website","Page title","Address","Time"],
+      ev.events.map(e=>[fmtDate(e.ts),esc(e.hostname),esc(e.user||"—"),esc(e.domain||"—"),esc((e.title||"").slice(0,90)),
+        `<span class="muted" style="font-size:11px;word-break:break-all">${esc(e.url||"")}</span>`,fmtHM(e.seconds)])));
+  };
+  params=bar.values(); await load();
+};
+
+VIEWS.email = async (main) => {
+  main.innerHTML=""; main.appendChild(topbar("Email — sent mail by computer"));
+  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
+  let params={};
+  const bar=filterBar(devs,(p)=>{ params=p; load(); },{extra:`<div class="field" style="margin:0;min-width:200px"><label>Search (from, to, subject, file)</label><input data-mq placeholder="e.g. gmail.com"/></div>`});
+  const exp=el(`<div class="toolbar" style="margin:-4px 0 14px;gap:10px"></div>`);
+  const csv=el(`<button class="btn sm ghost">⬇ CSV (all details)</button>`);
+  csv.onclick=()=>downloadWithAuth("/api/tracking/events.csv"+qp({...params,category:"email",q:bar.querySelector("[data-mq]").value.trim()}),"emails.csv");
+  exp.append(csv,exportButtons("email","Email report",()=>params));
+  const body=el(`<div></div>`); main.append(bar,exp,body);
+  main.appendChild(el(`<div class="muted" style="margin-top:10px;font-size:12px">Outlook (desktop) sends are recorded with From, To, CC, BCC, subject and attachments. Webmail in a browser (Gmail, Outlook web…) only shows tracked files chosen for upload — recipients and subject are not visible to the agent.</div>`));
+  const L=(v)=>Array.isArray(v)?v:(v?[v]:[]);
+  const load=async()=>{
+    body.innerHTML=`<div class="muted">Loading…</div>`;
+    const r=await api("/api/tracking/events"+qp({...params,category:"email",q:bar.querySelector("[data-mq]").value.trim(),limit:500}));
+    body.innerHTML="";
+    if(!r.events.length){ body.appendChild(el(`<div class="notice">No emails in this period. Turn on <b>Track ALL emails</b> (or <b>Email files</b>) in the computer's <a href="#tracking/profiles">tracking profile</a>, or <b>Email monitoring</b> on the computer's page. Outlook must be the mail program on that PC.</div>`)); return; }
+    const card=el(`<div class="card"><h3 style="margin:0 0 10px">${r.total} email(s)</h3></div>`);
+    card.appendChild(tableFrom(["Sent","Computer","User","From","To","CC","BCC","Subject","Attachments",""],
+      r.events.map(e=>{ const m=e.meta||{}, atts=L(m.attachments).filter(a=>!a.inline);
+        const list=(v)=>L(v).map(x=>esc(x)).join("<br>")||"—";
+        return [fmtDate(e.ts),esc(e.hostname),esc(e.user||"—"),esc(m.from||"—"),list(m.to),list(m.cc),list(m.bcc),
+          e.event_type==="email_attached"?`<span class="muted">webmail upload (not confirmed)</span>`:esc(m.subject||"(no subject)"),
+          atts.length?atts.map(a=>esc(a.name)+(L(m.tracked_attachments).includes(a.name)?' <span class="badge b-high">tracked</span>':"")).join("<br>"):(e.file_name?esc(e.file_name):"—"),
+          `<button class="btn sm ghost" data-mail="${e.id}">View</button>`]; })));
+    card.querySelectorAll("[data-mail]").forEach(b=>b.onclick=()=>showMail(r.events.find(x=>x.id===b.dataset.mail)));
+    body.appendChild(card);
+  };
+  bar.querySelector("[data-mq]").addEventListener("keydown",e=>{ if(e.key==="Enter") bar.querySelector(".btn").click(); });
+  params=bar.values(); await load();
+};
+
+VIEWS.repair = async (main) => {
+  main.innerHTML=""; main.appendChild(topbar("Agent Repair"));
+  const top=el(`<div class="grid" style="grid-template-columns:1fr 1fr;margin-bottom:14px">
+    <div class="card"><h3 style="margin:0 0 6px">Repair utility</h3>
+      <div class="muted" style="margin-bottom:10px">Download it, copy it to the computer with the problem and <b>double-click it as administrator</b>. It is set up for this server — no typing needed.</div>
+      <button class="btn" data-dl>⬇ Download VoyagerAgent_Repair.exe</button>
+      <div class="muted" style="margin-top:10px;font-size:12px">The result is shown on the computer and appears below within a minute.</div></div>
+    <div class="card"><h3 style="margin:0 0 6px">What it checks and fixes</h3><ol style="margin:0;padding-left:18px;line-height:1.7">
+      <li>Can this computer reach the Management Server (address, port 9084)?</li>
+      <li>Stops stuck or old agent copies</li>
+      <li>Registration: re-registers if the server lost/revoked it or the server address changed</li>
+      <li>Reinstalls the agent: Program Files, auto-start for all users, update task, firewall rule, folder access</li>
+      <li>Starts the agent and waits until it is <b>Connected</b></li></ol></div></div>`);
+  top.querySelector("[data-dl]").onclick=()=>downloadWithAuth("/api/download/agent"+qp({mode:"repair"}),"VoyagerAgent_Repair.exe");
+  main.appendChild(top);
+  const r=await api("/api/agent-repair"+qp());
+  const off=r.computers.filter(c=>c.status!=="active");
+  main.appendChild(cardTable(`Computers — ${off.length} not connected`,["Computer","Status","Last check-in","Agent","Current user","IP"],
+    r.computers.sort((a,b)=>(a.status==="active")-(b.status==="active")).map(c=>[`<b>${esc(c.hostname)}</b>`,statusBadge(c.status),
+      c.last_seen?`${fmtDate(c.last_seen)}<div class="muted" style="font-size:11px">${ago(c.last_seen)}</div>`:"never",
+      esc(c.agent_version||"—"),esc(c.current_user||"—"),esc(c.ip_address||"—")])));
+  main.appendChild(el(`<div class="muted" style="margin:8px 0 16px;font-size:12px">"Offline" means the agent has not checked in for 5 minutes — the PC itself may still answer ping. Run the repair utility on that PC.</div>`));
+  const rc=cardTable("Repair results",["When","Computer","Result","User","Agent",""],
+    r.reports.map(x=>[fmtDate(x.ts),esc(x.hostname),x.ok?'<span class="badge b-ok">fixed / OK</span>':'<span class="badge b-high">needs attention</span>',
+      esc(x.user||"—"),esc(x.agent_version||"—"),`<button class="btn sm ghost" data-rep="${x.id}">Steps</button>`]));
+  rc.querySelectorAll("[data-rep]").forEach(b=>b.onclick=()=>{ const x=r.reports.find(y=>y.id===b.dataset.rep);
+    modal(`Repair — ${x.hostname}`,tableFrom(["","Step","Result"],(x.steps||[]).map(s=>[s.ok?'<span class="badge b-ok">✓</span>':'<span class="badge b-high">✗</span>',esc(s.step),esc(s.detail)])),null,"Close"); });
+  main.appendChild(rc);
 };
 
 /* ---------------- period + computer filter shared by Activity and Reports ---------------- */
@@ -621,7 +765,7 @@ const TRK_EVT={logon:"Logged on",logoff:"Logged off",lock:"Locked",unlock:"Unloc
   internet_restored:"Internet restored",status:"Network status",wifi_connected:"Wi-Fi connected",wifi_changed:"Wi-Fi changed",
   wifi_disconnected:"Wi-Fi disconnected",usb_inserted:"USB inserted",usb_removed:"USB removed",copied_to_usb:"Copied TO USB",
   copied_from_usb:"Copied FROM USB",email_sent:"Email sent (Outlook)",email_attached:"Attached in webmail"};
-const fmtUtc=(s)=>{ if(!s) return "—"; const d=new Date(/[zZ]|[+-]\d\d:\d\d$/.test(s)?s:s+"Z"); return isNaN(d)?"—":d.toLocaleString(); };
+const fmtUtc=fmtDate;   // same rule everywhere: server times are UTC, shown in the viewer's local time
 const fmtSize=(b)=>b==null?"":b<1024?b+" B":b<1048576?(b/1024).toFixed(1)+" KB":(b/1048576).toFixed(1)+" MB";
 const TRK_SYNC=[[60,"1 minute"],[120,"2 minutes"],[300,"5 minutes"],[600,"10 minutes"],[900,"15 minutes"],[1800,"30 minutes"],[3600,"1 hour"]];
 
@@ -854,8 +998,9 @@ VIEWS.reports = async (main) => {
                        ["activity","Activity (detailed)","Every application window and website visit with time and duration"],
                        ["app_usage","Application usage by computer","Time per application on each computer"],
                        ["web_usage","Website usage by computer","Time and visits per website on each computer"],
-                       ["tracking","Logins, network, USB & email","Logon/logoff, Wi-Fi/network changes, USB and email file events"]]],
-    ["Inventory & security", [["devices","Device inventory",""],["software","Software by computer",""],["alerts","Alerts",""],
+                       ["tracking","Logins, network, USB & email","Logon/logoff, Wi-Fi/network changes, USB and email file events"],
+                       ["email","Emails sent","From, To, CC, BCC, subject and attachments of every tracked email"]]],
+    ["Inventory & security", [["hardware","Computer hardware","Make, model, serial, CPU, RAM, disks, free space, GPU, OS, MAC — one row per computer"],["devices","Device inventory",""],["software","Software by computer",""],["alerts","Alerts",""],
                        ["assets","Assets",""],["employees","Employees",""],["license","License",""]]],
   ];
   groups.forEach(([gname,kinds])=>{

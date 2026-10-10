@@ -79,6 +79,7 @@ REPORT_TITLES = {
     "computer_summary": "Computer-wise summary", "activity": "Activity (detailed)",
     "app_usage": "Application usage by computer", "web_usage": "Website usage by computer",
     "tracking": "Logins, network, USB & email events", "devices": "Device inventory",
+    "hardware": "Computer hardware", "email": "Emails sent",
     "software": "Software", "alerts": "Alerts", "assets": "Assets", "license": "License",
     "employees": "Employees",
 }
@@ -151,6 +152,40 @@ def _report_rows(db: Session, tid: str, kind: str, device_id: str | None = None,
                   e.file_name or "", e.file_size if e.file_size is not None else "", e.target or "",
                   *mail_cols(e.meta)]
                  for e in q.order_by(TrackingEvent.ts.desc()).limit(50000)])
+    if kind == "hardware":
+        q = db.query(Device).filter(Device.tenant_id == tid)
+        if device_id:
+            q = q.filter(Device.id == device_id)
+        rows = []
+        for d in q.order_by(Device.hostname):
+            h = d.hardware or {}
+            disks = "; ".join(f"{x.get('model', '')} {x.get('gb', '?')} GB {x.get('type', '')}".strip()
+                              for x in h.get("disks") or [])
+            vols = "; ".join(f"{v.get('drive')} {v.get('free_gb')}/{v.get('gb')} GB free" for v in h.get("volumes") or [])
+            rows.append([d.hostname, d.current_user or "", h.get("manufacturer") or "", h.get("model") or "",
+                         h.get("serial") or "", h.get("cpu") or "", h.get("cores") or "", h.get("ram_gb") or "",
+                         disks, vols, "; ".join(g.get("name") or "" for g in h.get("gpus") or []),
+                         h.get("os") or f"{d.os_name or ''} {d.os_version or ''}".strip(), h.get("os_build") or "",
+                         h.get("bios") or "", h.get("last_boot") or "", d.ip_address or "",
+                         "; ".join(n.get("mac") or "" for n in h.get("network") or []), h.get("collected_at") or ""])
+        return (["computer", "current user", "manufacturer", "model", "serial", "cpu", "cores", "ram GB", "disks",
+                 "drives (free/size)", "graphics", "os", "build", "bios", "last boot", "ip", "mac", "inventory date"], rows)
+    if kind == "email":
+        from ..services.tracking import mail_cols
+        q = in_period(db.query(TrackingEvent).filter(TrackingEvent.tenant_id == tid,
+                                                     TrackingEvent.category == "email"), TrackingEvent.ts)
+        if device_id:
+            q = q.filter(TrackingEvent.device_id == device_id)
+        rows = []
+        for e in q.order_by(TrackingEvent.ts.desc()).limit(50000):
+            m = e.meta or {}
+            atts = "; ".join(f"{a.get('name')} ({int(a.get('size') or 0) // 1024} KB)"
+                             for a in m.get("attachments") or [] if not a.get("inline")) or (e.file_name or "")
+            rows.append([lt(e.ts), host(e.device_id), e.user or "", *mail_cols(m), atts,
+                         "; ".join(m.get("tracked_attachments") or []),
+                         "webmail upload (not confirmed)" if e.event_type == "email_attached" else "Outlook"])
+        return (["sent", "computer", "user", "from", "to", "cc", "bcc", "subject", "attachments",
+                 "tracked files", "source"], rows)
     if kind == "assets":
         rows = db.query(Asset).filter(Asset.tenant_id == tid).all()
         return (["tag", "category", "name", "serial", "lifecycle", "warranty_expiry"],

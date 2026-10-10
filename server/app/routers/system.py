@@ -211,7 +211,7 @@ def updates_agent_info(device_id: str | None = None, db: Session = Depends(get_d
         out["approved"] = bool(info) and au.approved(db, dev, info["version"])
         if dev:                                         # machine policies the SYSTEM task enforces
             from ..services import tracking as trk
-            s = trk.normalize_settings(trk.effective_profile(db, dev).settings)
+            s = trk.device_settings(db, dev)
             out["policies"] = {"block_private_browsing": s["block_private_browsing"]}
             db.commit()
     return out

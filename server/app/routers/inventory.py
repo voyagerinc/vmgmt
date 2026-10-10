@@ -26,8 +26,10 @@ def software(tenant_id: str | None = Query(None), device_id: str | None = None,
         query = query.filter(Software.list_status == list_status)
     if q:
         query = query.filter(Software.name.ilike(f"%{q}%"))
-    rows = query.order_by(Software.name).limit(1000).all()
-    return [{"id": s.id, "device_id": s.device_id, "name": s.name, "publisher": s.publisher,
+    rows = query.order_by(Software.name).limit(5000 if device_id else 2000).all()
+    hosts = dict(db.query(Device.id, Device.hostname).filter(Device.tenant_id == tid).all())
+    return [{"id": s.id, "device_id": s.device_id, "hostname": hosts.get(s.device_id, s.device_id),
+             "name": s.name, "publisher": s.publisher,
              "version": s.version, "install_date": s.install_date, "present": s.present,
              "list_status": s.list_status, "last_seen": s.last_seen} for s in rows]
 
@@ -67,6 +69,41 @@ def activity(tenant_id: str | None = Query(None), device_id: str | None = None,
              "duration": e.duration_seconds} for e in rows]
 
 
+@router.get("/hardware")
+def hardware_list(tenant_id: str | None = Query(None), device_id: str | None = None,
+                  db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
+    """Every computer's hardware inventory (make/model/serial, CPU, RAM, disks, GPU, OS, network)."""
+    tid = resolve_tenant(user, tenant_id)
+    q = db.query(Device).filter(Device.tenant_id == tid)
+    if device_id:
+        q = q.filter(Device.id == device_id)
+    return [{"id": d.id, "hostname": d.hostname, "current_user": d.current_user, "status": d.status.value,
+             "last_seen": d.last_seen, "ip_address": d.ip_address, "agent_version": d.agent_version,
+             "hardware": d.hardware or {}} for d in q.order_by(Device.hostname).all()]
+
+
+@router.get("/agent-repair")
+def agent_repair_overview(tenant_id: str | None = Query(None), db: Session = Depends(get_db),
+                          user: AdminUser = Depends(get_current_user)):
+    """Agent health per computer (online/offline, last check-in) + recent repair-utility results."""
+    from ..models import RepairReport
+    tid = resolve_tenant(user, tenant_id)
+    now = datetime.now(timezone.utc)
+    names = {}
+    comps = []
+    for d in db.query(Device).filter(Device.tenant_id == tid).order_by(Device.hostname).all():
+        names[d.id] = d.hostname
+        last = d.last_seen.replace(tzinfo=timezone.utc) if d.last_seen and d.last_seen.tzinfo is None else d.last_seen
+        comps.append({"id": d.id, "hostname": d.hostname, "status": d.status.value, "last_seen": d.last_seen,
+                      "minutes_silent": int((now - last).total_seconds() // 60) if last else None,
+                      "agent_version": d.agent_version, "current_user": d.current_user, "ip_address": d.ip_address})
+    reports = (db.query(RepairReport).filter(RepairReport.tenant_id == tid)
+               .order_by(RepairReport.ts.desc()).limit(100).all())
+    return {"computers": comps,
+            "reports": [{"id": r.id, "ts": r.ts, "device_id": r.device_id, "hostname": names.get(r.device_id, r.device_id),
+                         "ok": r.ok, "agent_version": r.agent_version, "user": r.user, "steps": r.steps} for r in reports]}
+
+
 @router.get("/activity/summary")
 def activity_summary(tenant_id: str | None = Query(None), device_id: str | None = None,
                      date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
@@ -81,6 +118,17 @@ def activity_summary(tenant_id: str | None = Query(None), device_id: str | None 
             "top_apps": ar.top(db, tid, "application", start, end, device_id),
             "top_sites": ar.top(db, tid, "domain", start, end, device_id),
             "totals": {k: sum(c[k] for c in comps) for k in ("app_seconds", "web_seconds", "idle_seconds", "web_visits")}}
+
+
+@router.get("/activity/usage")
+def activity_usage(tenant_id: str | None = Query(None), by: str = "domain", device_id: str | None = None,
+                   date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
+                   hours: int = 24, db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
+    """Per computer x website (by=domain) or application totals."""
+    from ..services import activity_report as ar
+    tid = resolve_tenant(user, tenant_id)
+    start, end = ar.window(date_from, date_to, tz_offset, hours)
+    return ar.usage(db, tid, "domain" if by == "domain" else "application", start, end, device_id)
 
 
 @router.get("/activity/events")

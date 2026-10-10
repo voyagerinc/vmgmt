@@ -118,6 +118,8 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         device.agent_version = body.agent_version
     if body.ip_address:
         device.ip_address = body.ip_address
+    if body.hardware:
+        device.hardware = {**(device.hardware or {}), **body.hardware}
     if body.current_user:
         device.current_user = body.current_user[:120]
         device.logged_users = sorted({u[:120] for u in body.users if u})[:20] or [device.current_user]
@@ -131,18 +133,18 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
             tenant_id=tid, device_id=device.id, cpu_percent=h.cpu_percent, ram_percent=h.ram_percent,
             disk_percent=h.disk_percent, net_up_kbps=h.net_up_kbps, net_down_kbps=h.net_down_kbps,
             battery_percent=h.battery_percent, battery_health=h.battery_health,
-            uptime_seconds=h.uptime_seconds, extra=h.extra, ts=h.ts or _now(),
+            uptime_seconds=h.uptime_seconds, extra=h.extra, ts=trk.clamp_ts(h.ts),
         ))
         alert_engine.process_health(db, tid, device, h.model_dump())
 
     # ---- activity: per-agent profile, or app/web activity on in the tracking profile ----
-    tset = trk.normalize_settings(trk.effective_profile(db, device).settings)
+    tset = trk.device_settings(db, device)
     if prof.get("activity", False) or tset["app_activity"] or tset["web_activity"]:
         for a in body.activity:
             db.add(ActivityEvent(
                 tenant_id=tid, device_id=device.id, event_type=a.event_type, application=a.application,
                 domain=a.domain, category=a.category, title=a.title,
-                duration_seconds=a.duration_seconds, ts=a.ts or _now(), meta=a.meta,
+                duration_seconds=a.duration_seconds, ts=trk.clamp_ts(a.ts), meta=a.meta,
             ))
             alert_engine.process_activity(db, tid, device, a.model_dump())
 
@@ -151,7 +153,7 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         for f in body.file_events:
             fe = FileEvent(tenant_id=tid, device_id=device.id, action=f.action, path=f.path,
                            destination=f.destination, extension=f.extension, size_bytes=f.size_bytes,
-                           classification=f.classification, ts=f.ts or _now())
+                           classification=f.classification, ts=trk.clamp_ts(f.ts))
             db.add(fe)
             alert_engine.process_file(db, tid, device, f.model_dump())
 
@@ -207,6 +209,21 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         remote_sessions=sess_payloads,
         server_time=_now(),
     )
+
+
+@router.post("/repair-report")
+def repair_report(body: dict, device: Device = Depends(get_agent_device), db: Session = Depends(get_db)):
+    """Agent Repair utility result (steps, ok) - shown in the console's Agent Repair tab."""
+    from ..models import RepairReport
+    steps = [s for s in (body.get("steps") or []) if isinstance(s, dict)][:30]
+    db.add(RepairReport(tenant_id=device.tenant_id, device_id=device.id, ok=bool(body.get("ok")),
+                        agent_version=str(body.get("version") or "")[:40] or None,
+                        user=str(body.get("current_user") or "")[:120] or None,
+                        steps=[{"step": str(s.get("step"))[:80], "ok": bool(s.get("ok")),
+                                "detail": str(s.get("detail"))[:500]} for s in steps]))
+    device.last_seen = _now()
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/events")

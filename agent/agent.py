@@ -21,7 +21,7 @@ import requests
 
 import collectors
 
-__version__ = "4.5.0"
+__version__ = "4.6.0"
 
 
 def _stamped_version() -> str:
@@ -77,6 +77,7 @@ class Agent:
         self._last_software_push = 0.0
         self._last_interval_shot = 0.0
         self._activity_buf: list[dict] = []
+        self._last_hw = 0.0
         # logins / network+Wi-Fi / USB / email trackers, configured by the server's tracking profile
         self.tracker = None
         if os.name == "nt":
@@ -167,6 +168,10 @@ class Agent:
             if self._activity_buf:
                 body["activity"].extend(self._activity_buf)
                 self._activity_buf = []
+        # full hardware inventory (make/model/serial, CPU, RAM, disks, OS...) at start + every 6 h
+        if time.time() - self._last_hw > 6 * 3600:
+            body["hardware"] = collectors.hardware_full()
+            self._last_hw = time.time()
         # periodic full software snapshot (every 30 min)
         if self.collection.get("software", True) and time.time() - self._last_software_push > 1800:
             body["software"] = collectors.installed_software()
@@ -199,6 +204,25 @@ class Agent:
                 break
             self.offline_queue.popleft()
 
+    @staticmethod
+    def _sync_clock(server_time) -> None:
+        """Learn how far this PC's clock is from the server's (event times are corrected by it)."""
+        if not server_time:
+            return
+        try:
+            from datetime import datetime, timezone
+            st = datetime.fromisoformat(str(server_time).replace("Z", "+00:00"))
+            if st.tzinfo is None:
+                st = st.replace(tzinfo=timezone.utc)
+            off = (st - datetime.now(timezone.utc)).total_seconds()
+            import trackers
+            if abs(off - trackers.CLOCK_OFFSET) > 30:
+                if abs(off) >= 60:
+                    log.warning("PC clock differs from the server by %d s - event times are corrected", off)
+                trackers.CLOCK_OFFSET = off
+        except Exception:
+            pass
+
     def _send_events(self, events: list[dict]) -> dict | None:
         """Upload a batch of tracker events; None keeps them queued for the next sync."""
         if not self.enrolled:
@@ -217,6 +241,7 @@ class Agent:
 
     def _handle_response(self, resp: dict) -> None:
         self.heartbeat_interval = resp.get("heartbeat_interval", self.heartbeat_interval)
+        self._sync_clock(resp.get("server_time"))
         if resp.get("tracking") and self.tracker:
             self.tracker.apply(resp["tracking"])
             if resp["tracking"] != self.state.get("tracking"):
@@ -750,6 +775,123 @@ def _enroll_if_needed(agent: "Agent", args) -> bool:
     return False
 
 
+def run_repair(args, cfg: dict) -> int:
+    """Agent Repair utility (VoyagerAgent_Repair_<Company>.exe, or --repair): diagnose and fix
+    the agent on this computer, show the result and send the report to the Management Server.
+
+    Steps: server reachable -> stop old/stuck copies -> registration valid (re-register when the
+    server lost/revoked it or its address changed) -> reinstall (Program Files, autostart for all
+    users, update task, firewall, state-folder access) -> start -> wait until Connected."""
+    import socket
+    steps: list[dict] = []
+
+    def step(name: str, ok: bool, detail: str) -> bool:
+        steps.append({"step": name, "ok": bool(ok), "detail": detail})
+        log.info("Repair: %s - %s - %s", name, "OK" if ok else "FAILED", detail)
+        return ok
+
+    server = (args.server or "").rstrip("/")
+    admin = _is_admin()
+    step("Administrator rights", admin, "running as administrator" if admin else
+         "not elevated - only this user's installation can be repaired")
+    # 1. server
+    try:
+        r = requests.get(f"{server}/api/meta", timeout=15)
+        reach = r.ok
+        detail = f"{server} answered (server {r.json().get('version_display', '?')})" if reach else \
+            f"{server} answered HTTP {r.status_code}"
+    except Exception as e:
+        reach, detail = False, f"cannot reach {server} ({type(e).__name__})"
+        try:
+            from urllib.parse import urlsplit
+            u = urlsplit(server)
+            socket.create_connection((u.hostname, u.port or 80), timeout=5).close()
+            detail += " - the port answers, so the Management Server program is not responding"
+        except Exception:
+            detail += (" - nothing answers on that address/port: is the server running, is its IP still "
+                       "the same, and is TCP port 9084 allowed in the server's Windows Firewall?")
+    step("Connect to Management Server", reach, detail)
+    # 2. stop stuck copies
+    for d in (MACHINE_DIR, USER_DIR):
+        _stop_running_copies(d / "VoyagerAgent.exe")
+    step("Stop running agent copies", True, "old/stuck agent processes stopped")
+    agent = Agent(server)
+    if reach:
+        # 3. registration
+        if agent.enrolled and (agent.state.get("server") or "").rstrip("/") != server:
+            agent.state.pop("device_id", None)
+            agent.state.pop("device_cert", None)
+            step("Server address", True, f"agent pointed to {agent.state.get('server')} - moving to {server}")
+        if agent.enrolled:
+            try:
+                code = agent.session.post(f"{server}/api/agents/heartbeat", json={},
+                                          headers=agent._auth_headers(), timeout=30).status_code
+            except Exception:
+                code = 0
+            if code in (401, 403, 404):
+                agent.state.pop("device_id", None)
+                agent.state.pop("device_cert", None)
+                step("Registration check", True, f"server no longer accepts this computer (HTTP {code}) - registering again")
+            else:
+                step("Registration check", code == 200, f"registered as device {agent.state.get('device_id')}"
+                     if code == 200 else f"heartbeat test answered HTTP {code}")
+        if not agent.enrolled:
+            if not (args.license and args.token):
+                step("Register computer", False, "this repair file has no company settings - download it "
+                     "again from the Management Server (Agent Repair tab)")
+            elif agent.enroll(args.license, args.token):
+                step("Register computer", True, f"registered as device {agent.state.get('device_id')}")
+            else:
+                status = STATE_DIR / "status.txt"
+                step("Register computer", False, "server refused: " +
+                     (status.read_text(encoding="utf-8").strip() if status.exists() else "unknown reason") +
+                     " (license inactive or device limit reached?)")
+    # 4. reinstall
+    dest = None
+    try:
+        dest = _install(admin, server, agent.state.get("device_id"))
+        if admin:
+            _sync_machine_policies(dest.parent)
+        step("Reinstall agent", True, f"{dest} - autostart for {'all users' if admin else 'this user'}"
+             + (", update task, firewall rule, state-folder access" if admin else ""))
+    except Exception as e:
+        step("Reinstall agent", False, f"{type(e).__name__}: {e}")
+    # 5. start + verify
+    connected = False
+    if dest and agent.enrolled and reach:
+        status = STATE_DIR / "status.txt"
+        try:
+            status.unlink()
+        except OSError:
+            pass
+        _start_installed(dest)
+        for _ in range(45):
+            time.sleep(2)
+            if status.exists() and status.read_text(encoding="utf-8").strip() == "Connected":
+                connected = True
+                break
+        step("Agent running and connected", connected, "the agent checked in with the server" if connected else
+             "the agent started but has not checked in within 90 seconds - see " + str(STATE_DIR / "agent.log"))
+    ok = all(s["ok"] for s in steps if s["step"] != "Administrator rights")
+    # 6. report
+    report = {"ok": ok, "version": AGENT_VERSION, "steps": steps, **_session_users(),
+              "computer": os.environ.get("COMPUTERNAME")}
+    try:
+        (STATE_DIR / "repair_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    if reach and agent.enrolled:
+        try:
+            agent.session.post(f"{server}/api/agents/repair-report", json=report,
+                               headers=agent._auth_headers(), timeout=30)
+        except Exception:
+            pass
+    lines = [("OK   " if s["ok"] else "FAIL ") + f"{s['step']}: {s['detail']}" for s in steps]
+    _show_message(("Agent repaired - this computer is connected.\n\n" if ok else
+                   "Agent repair could not fix everything:\n\n") + "\n".join(lines))
+    return 0 if ok else 5
+
+
 def main() -> int:
     cfg = load_bundled_config()
     ap = argparse.ArgumentParser(description="Endpoint Management Agent")
@@ -760,6 +902,8 @@ def main() -> int:
     ap.add_argument("--token", default=cfg.get("enroll_token"),
                     help="Enrollment token (first enrollment only)")
     ap.add_argument("--reenroll", action="store_true", help="Force re-enrollment")
+    ap.add_argument("--repair", action="store_true",
+                    help="Diagnose and repair the agent on this computer (also: repair download)")
     ap.add_argument("--update", action="store_true",
                     help="Apply an approved agent update (run by the SYSTEM updater task)")
     args = ap.parse_args()
@@ -786,6 +930,8 @@ def main() -> int:
         machine_wide = _is_admin()
         if not machine_wide and _relaunch_elevated():
             return 0                                  # the elevated copy does the install
+        if args.repair or cfg.get("repair"):
+            return run_repair(args, cfg)
         agent = Agent(args.server)
         if args.reenroll:
             agent.state.pop("device_id", None)

@@ -359,6 +359,19 @@ class FileEvent(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
+class RepairReport(Base):
+    """Result of the Agent Repair utility run on a computer."""
+    __tablename__ = "repair_reports"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    agent_version: Mapped[str | None] = mapped_column(String(40))
+    user: Mapped[str | None] = mapped_column(String(120))
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class TrackingProfile(Base):
     """A named set of trackers (logins, network/Wi-Fi, USB files, email files), tracked file
     types and the event sync interval. Assigned to computers; one profile is the company default."""

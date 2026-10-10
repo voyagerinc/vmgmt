@@ -169,7 +169,16 @@ def assign_profile(profile_id: str, body: dict, request: Request, tenant_id: str
     return {"ok": True, "assigned": n}
 
 
-def _event_query(db: Session, tid: str, category, device_id, event_type, q, date_from, date_to):
+def _period(date_from, date_to, tz_offset):
+    """Local-day period -> UTC bounds (accepts YYYY-MM-DD; full timestamps are cut to the day)."""
+    from ..services import activity_report as ar
+    if not (date_from or date_to):
+        return None, None
+    return ar.window(str(date_from)[:10] if date_from else None, str(date_to)[:10] if date_to else None, tz_offset)
+
+
+def _event_query(db: Session, tid: str, category, device_id, event_type, q, date_from, date_to, tz_offset=0):
+    date_from, date_to = _period(date_from, date_to, tz_offset)
     qry = db.query(TrackingEvent, Device.hostname).join(Device, Device.id == TrackingEvent.device_id) \
         .filter(TrackingEvent.tenant_id == tid)
     if category:
@@ -181,8 +190,7 @@ def _event_query(db: Session, tid: str, category, device_id, event_type, q, date
     if date_from:
         qry = qry.filter(TrackingEvent.ts >= date_from)
     if date_to:
-        qry = qry.filter(TrackingEvent.ts < date_to + timedelta(days=1) if date_to.hour == 0 and
-                         date_to.minute == 0 else TrackingEvent.ts <= date_to)
+        qry = qry.filter(TrackingEvent.ts < date_to)
     if q:
         like = f"%{q.strip()}%"
         qry = qry.filter(or_(TrackingEvent.detail.ilike(like), TrackingEvent.file_name.ilike(like),
@@ -200,11 +208,11 @@ def _event_out(e: TrackingEvent, host: str) -> dict:
 @router.get("/events")
 def list_events(tenant_id: str | None = Query(None), category: str | None = None,
                 device_id: str | None = None, event_type: str | None = None, q: str | None = None,
-                date_from: datetime | None = None, date_to: datetime | None = None,
+                date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
                 limit: int = Query(200, le=1000), offset: int = 0,
                 db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
     tid = resolve_tenant(user, tenant_id)
-    qry = _event_query(db, tid, category, device_id, event_type, q, date_from, date_to)
+    qry = _event_query(db, tid, category, device_id, event_type, q, date_from, date_to, tz_offset)
     total = qry.count()
     rows = qry.offset(offset).limit(limit).all()
     since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
@@ -217,14 +225,14 @@ def list_events(tenant_id: str | None = Query(None), category: str | None = None
 @router.get("/events.csv")
 def export_events(tenant_id: str | None = Query(None), category: str | None = None,
                   device_id: str | None = None, event_type: str | None = None, q: str | None = None,
-                  date_from: datetime | None = None, date_to: datetime | None = None,
+                  date_from: str | None = None, date_to: str | None = None, tz_offset: int = 0,
                   db: Session = Depends(get_db), user: AdminUser = Depends(get_current_user)):
     tid = resolve_tenant(user, tenant_id)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Time (UTC)", "Computer", "User", "Category", "Event", "Detail", "File", "Type",
                 "Size (bytes)", "Target (USB / recipients / Wi-Fi)", "From", "To", "CC", "BCC", "Subject"])
-    for e, h in _event_query(db, tid, category, device_id, event_type, q, date_from, date_to).limit(50000):
+    for e, h in _event_query(db, tid, category, device_id, event_type, q, date_from, date_to, tz_offset).limit(50000):
         w.writerow([e.ts.strftime("%Y-%m-%d %H:%M:%S") if e.ts else "", h, e.user or "", e.category,
                     e.event_type, e.detail or "", e.file_name or "", e.file_ext or "",
                     e.file_size if e.file_size is not None else "", e.target or "", *trk.mail_cols(e.meta)])

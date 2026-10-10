@@ -32,6 +32,20 @@ _WEBMAIL = ("gmail", "mail.google", "outlook", "office 365", "microsoft 365", "y
             "zoho mail", "rediffmail", "proton mail", "inbox", "compose", "new message", "mail -")
 
 
+# server clock minus this PC's clock (seconds), learned from each heartbeat's server_time;
+# event times are corrected by it so a PC with a wrong clock still reports the right time
+CLOCK_OFFSET = 0.0
+
+
+def _shift(ts: str | None) -> str | None:
+    if not ts or abs(CLOCK_OFFSET) < 60:                 # ignore normal small drift
+        return ts
+    try:
+        return (datetime.fromisoformat(ts) + timedelta(seconds=CLOCK_OFFSET)).isoformat()
+    except ValueError:
+        return ts
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -103,7 +117,7 @@ class EventTracker:
         # user="" (machine events: startup/shutdown/sleep) is kept blank; omitted = current user
         user = fields.pop("user") if "user" in fields else _user()
         ev = {"category": category, "event_type": event_type, "detail": detail,
-              "user": user or None, "ts": fields.pop("ts", None) or _now_iso(), **fields}
+              "user": user or None, "ts": _shift(fields.pop("ts", None) or _now_iso()), **fields}
         line = json.dumps(ev, default=str)
         with self._lock:
             try:
@@ -166,6 +180,8 @@ class EventTracker:
                 self.activity_buf.append(self._seg_item(seg))
                 seg[3], seg[4] = seg[3] + seg[4], 0.0          # continue the same window from here
             items, self.activity_buf = self.activity_buf, []
+        for it in items:
+            it["ts"] = _shift(it.get("ts"))
         return items
 
     @staticmethod

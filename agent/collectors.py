@@ -73,6 +73,111 @@ def hardware() -> dict:
     return hw
 
 
+def hardware_full() -> dict:
+    """Complete hardware inventory from WMI (Windows): make/model/serial, BIOS, CPU, memory
+    modules, physical disks (SSD/HDD), volumes with free space, GPU, OS, network adapters."""
+    hw = hardware()
+    if not IS_WIN:
+        return hw
+    try:
+        import pythoncom
+        import win32com.client
+    except Exception:
+        return hw
+    pythoncom.CoInitialize()
+    try:
+        hw.update(_wmi_inventory(win32com.client, hw))    # all COM objects are released on return
+    except Exception:
+        pass
+    finally:
+        import gc
+        gc.collect()
+        pythoncom.CoUninitialize()
+    return hw
+
+
+def _wmi_inventory(client, hw: dict) -> dict:
+    try:
+        wmi = client.GetObject("winmgmts:\\\\.\\root\\cimv2")
+
+        def q(cls, props, where=""):
+            out = []
+            try:
+                for o in wmi.ExecQuery(f"SELECT {','.join(props)} FROM {cls} {where}"):
+                    out.append({p: getattr(o, p, None) for p in props})
+            except Exception:
+                pass
+            return out
+
+        def gb(v):
+            try:
+                return round(int(v) / (1024 ** 3), 1)
+            except (TypeError, ValueError):
+                return None
+
+        cs = (q("Win32_ComputerSystem", ["Manufacturer", "Model", "TotalPhysicalMemory", "Domain",
+                                         "SystemType"]) or [{}])[0]
+        bios = (q("Win32_BIOS", ["SerialNumber", "SMBIOSBIOSVersion", "ReleaseDate"]) or [{}])[0]
+        board = (q("Win32_BaseBoard", ["Manufacturer", "Product"]) or [{}])[0]
+        osi = (q("Win32_OperatingSystem", ["Caption", "Version", "BuildNumber", "OSArchitecture",
+                                           "InstallDate", "LastBootUpTime"]) or [{}])[0]
+        cpus = q("Win32_Processor", ["Name", "NumberOfCores", "NumberOfLogicalProcessors", "MaxClockSpeed"])
+        mem = q("Win32_PhysicalMemory", ["Capacity", "Speed", "Manufacturer", "PartNumber", "DeviceLocator"])
+        disks = q("Win32_DiskDrive", ["Model", "Size", "InterfaceType", "SerialNumber", "Index"])
+        vols = q("Win32_LogicalDisk", ["DeviceID", "Size", "FreeSpace", "FileSystem", "VolumeName"],
+                 "WHERE DriveType=3")
+        gpus = q("Win32_VideoController", ["Name", "AdapterRAM", "DriverVersion"])
+        nics = q("Win32_NetworkAdapterConfiguration", ["Description", "MACAddress", "IPAddress"],
+                 "WHERE IPEnabled=True")
+        # SSD vs HDD (Windows 8+ storage namespace)
+        media = {}
+        try:
+            st = client.GetObject("winmgmts:\\\\.\\root\\Microsoft\\Windows\\Storage")
+            for d in st.ExecQuery("SELECT DeviceId, MediaType, BusType FROM MSFT_PhysicalDisk"):
+                media[str(d.DeviceId)] = ({3: "HDD", 4: "SSD", 5: "SCM"}.get(int(d.MediaType or 0), "Unknown"),
+                                          {7: "USB", 11: "SATA", 17: "NVMe", 8: "RAID"}.get(int(d.BusType or 0)))
+        except Exception:
+            pass
+
+        def wdate(v):
+            s = str(v or "")
+            return f"{s[:4]}-{s[4:6]}-{s[6:8]}" + (f" {s[8:10]}:{s[10:12]}" if len(s) >= 12 else "") if len(s) >= 8 else None
+
+        cpu = cpus[0] if cpus else {}
+        return {
+            "manufacturer": (cs.get("Manufacturer") or "").strip(), "model": (cs.get("Model") or "").strip(),
+            "serial": (bios.get("SerialNumber") or "").strip(), "bios": bios.get("SMBIOSBIOSVersion"),
+            "bios_date": wdate(bios.get("ReleaseDate")), "board": " ".join(
+                x for x in ((board.get("Manufacturer") or "").strip(), (board.get("Product") or "").strip()) if x),
+            "domain": cs.get("Domain"), "system_type": cs.get("SystemType"),
+            "cpu": (cpu.get("Name") or hw.get("cpu") or "").strip(), "cpu_count": len(cpus),
+            "cores": cpu.get("NumberOfCores"), "threads": cpu.get("NumberOfLogicalProcessors"),
+            "cpu_mhz": cpu.get("MaxClockSpeed"),
+            "ram_gb": gb(cs.get("TotalPhysicalMemory")) or hw.get("ram_gb"),
+            "memory_modules": [{"slot": m.get("DeviceLocator"), "gb": gb(m.get("Capacity")), "speed": m.get("Speed"),
+                                "maker": (m.get("Manufacturer") or "").strip(), "part": (m.get("PartNumber") or "").strip()}
+                               for m in mem],
+            "disks": [{"model": (d.get("Model") or "").strip(), "gb": gb(d.get("Size")),
+                       "interface": (media.get(str(d.get("Index")), (None, None))[1] or d.get("InterfaceType")),
+                       "type": media.get(str(d.get("Index")), ("Unknown", None))[0],
+                       "serial": (d.get("SerialNumber") or "").strip()} for d in disks],
+            "volumes": [{"drive": v.get("DeviceID"), "label": v.get("VolumeName"), "fs": v.get("FileSystem"),
+                         "gb": gb(v.get("Size")), "free_gb": gb(v.get("FreeSpace"))} for v in vols],
+            "disk_gb": round(sum(gb(v.get("Size")) or 0 for v in vols), 1) or hw.get("disk_gb"),
+            "disk_free_gb": round(sum(gb(v.get("FreeSpace")) or 0 for v in vols), 1),
+            "gpus": [{"name": g.get("Name"), "reported_vram_gb": gb(g.get("AdapterRAM")), "driver": g.get("DriverVersion")}
+                     for g in gpus],
+            "os": " ".join(x for x in (osi.get("Caption"), osi.get("OSArchitecture")) if x),
+            "os_version": osi.get("Version"), "os_build": osi.get("BuildNumber"),
+            "os_installed": wdate(osi.get("InstallDate")), "last_boot": wdate(osi.get("LastBootUpTime")),
+            "network": [{"name": n.get("Description"), "mac": n.get("MACAddress"),
+                         "ip": ", ".join(ip for ip in (n.get("IPAddress") or []) if ":" not in ip)} for n in nics],
+            "collected_at": time.strftime("%Y-%m-%d %H:%M"),
+        }
+    except Exception:
+        return {}
+
+
 # ----------------------------------------------------------------- health (PRD §15)
 def health() -> dict:
     out: dict = {}

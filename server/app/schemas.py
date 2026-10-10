@@ -289,6 +289,7 @@ class HeartbeatIn(BaseModel):
     ip_address: str | None = None
     current_user: str | None = None                 # Windows account (DOMAIN/user) of the reporting session
     users: list[str] = Field(default_factory=list)   # all accounts signed in on the PC
+    hardware: dict | None = None                      # full inventory (start + every 6 h)
     health: HealthItem | None = None
     activity: list[ActivityItem] = Field(default_factory=list)
     file_events: list[FileEventItem] = Field(default_factory=list)

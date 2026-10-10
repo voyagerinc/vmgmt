@@ -97,7 +97,8 @@ def _fetch_agent_exe() -> bool:
 
 
 @router.get("/agent")
-def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(get_db),
+def download_agent(tenant_id: str | None = Query(None), mode: str = Query("install", pattern="^(install|repair)$"),
+                   db: Session = Depends(get_db),
                    user: AdminUser = Depends(require_roles(Role.IT_ADMIN, Role.CUSTOMER_OWNER))):
     """Build and stream a ready-to-run agent package for the tenant (requires active license)."""
     tid = resolve_tenant(user, tenant_id)
@@ -127,6 +128,7 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
         "server": settings.server_public_url.rstrip("/"),
         "license_id": lic.id, "enroll_token": tok.token,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        **({"repair": True} if mode == "repair" else {}),   # Agent Repair utility: diagnose + fix on run
     }
     # One self-contained file: the standalone agent with this company's config appended
     # (the agent reads it from the end of its own .exe). Download -> double-click -> done.
@@ -138,7 +140,7 @@ def download_agent(tenant_id: str | None = Query(None), db: Session = Depends(ge
                  actor_email=user.email, target_type="tenant", target_id=tid,
                  new_value={"format": "exe-embedded-config"})
     db.commit()
-    fname = f"VoyagerAgent_{_safe(tenant.company_name).replace(' ', '_')}.exe"
+    fname = f"VoyagerAgent{'_Repair' if mode == 'repair' else ''}_{_safe(tenant.company_name).replace(' ', '_')}.exe"
     return Response(content=data, media_type="application/vnd.microsoft.portable-executable",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 

@@ -7,7 +7,7 @@ contents or email bodies.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -88,10 +88,27 @@ def effective_profile(db: Session, device: Device) -> TrackingProfile:
     return default_profile(db, device.tenant_id)
 
 
+# Per-computer switches (computer page -> Data collection profile) that turn trackers on for that
+# computer on top of its tracking profile.
+_DEVICE_SWITCHES = {"email": ("email_files", "email_all"), "usb": ("usb_files",),
+                    "website": ("web_activity",), "activity": ("app_activity",)}
+
+
+def device_settings(db: Session, device: Device) -> dict:
+    """Effective tracker settings of a computer: its profile + its own collection switches."""
+    s = normalize_settings(effective_profile(db, device).settings)
+    col = device.collection or {}
+    for switch, keys in _DEVICE_SWITCHES.items():
+        if col.get(switch):
+            for k in keys:
+                s[k] = True
+    return s
+
+
 def agent_payload(db: Session, device: Device) -> dict:
     """What the agent receives in each heartbeat: the effective tracker settings."""
     p = effective_profile(db, device)
-    s = normalize_settings(p.settings)
+    s = device_settings(db, device)
     return {"profile_id": p.id, "profile_name": p.name,
             "version": int(p.updated_at.timestamp()) if p.updated_at else 0, **s}
 
@@ -113,7 +130,17 @@ def _ts(v) -> datetime:
             return datetime.now(timezone.utc).replace(tzinfo=None)
     if dt.tzinfo:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+    return clamp_ts(dt)
+
+
+def clamp_ts(dt):
+    """Event times come from the PC clock: a time in the future (clock running ahead) is replaced
+    by the server's receive time, so the console never shows events that 'have not happened yet'."""
+    if dt is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    naive = dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return now if naive > now + timedelta(minutes=5) else naive
 
 
 def _clip(v, n):
@@ -122,7 +149,7 @@ def _clip(v, n):
 
 def record_events(db: Session, device: Device, events: list[dict]) -> int:
     """Store a batch of agent events; raise alerts for tracked files leaving the PC."""
-    prof = normalize_settings(effective_profile(db, device).settings)
+    prof = device_settings(db, device)
     n = 0
     for e in events[:2000]:
         cat = str(e.get("category") or "").lower()
