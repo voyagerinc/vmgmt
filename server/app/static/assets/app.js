@@ -186,6 +186,33 @@ async function route(){
   }catch(e){ main.innerHTML=""; main.appendChild(topbar("Error")); main.appendChild(el(`<div class="notice">${esc(e.message)}</div>`)); }
 }
 
+/* SMTP test popup: settings used, every step of the SMTP conversation with the server's
+   reply, where it failed and how to fix it, plus "Copy details" for support. */
+function showSmtpReport(d, title){
+  const s=d.settings||{};
+  const body=el(`<div style="max-width:760px"></div>`);
+  body.appendChild(el(d.ok
+    ?`<div class="notice" style="background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.5);color:#86efac">✓ <b>All checks passed.</b> Email delivery is working.</div>`
+    :`<div class="notice" style="background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.5);color:#fca5a5">✗ <b>Failed at: ${esc(d.failed_step||"unknown step")}</b></div>`));
+  if(!d.ok && d.hint) body.appendChild(el(`<div class="notice" style="margin-top:8px"><b>How to fix:</b> ${esc(d.hint)}</div>`));
+  body.appendChild(el(`<h4 style="margin:14px 0 6px">Settings used</h4>`));
+  body.appendChild(tableFrom(["Host","Port","Encryption","Username","Password","From","Test email to"],
+    [[esc(s.host),esc(s.port),esc(s.encryption),esc(s.username),esc(s.password),esc(s.from),esc(s.send_to)]]));
+  body.appendChild(el(`<h4 style="margin:14px 0 6px">Steps</h4>`));
+  body.appendChild(tableFrom(["","Step","Result / server reply","Time"],
+    (d.steps||[]).map(x=>[x.ok?'<span class="badge b-ok">✓</span>':'<span class="badge b-high">✗</span>',
+      `<b>${esc(x.step)}</b>`,`<span style="white-space:pre-wrap;word-break:break-word">${esc(x.detail)}</span>`,`${x.ms} ms`])));
+  const text=[`SMTP test: ${d.ok?"OK":"FAILED at "+d.failed_step}`,
+    `Settings: host=${s.host} port=${s.port} encryption=${s.encryption} user=${s.username} password=${s.password} from=${s.from} to=${s.send_to}`,
+    ...(d.steps||[]).map(x=>`${x.ok?"[OK]  ":"[FAIL]"} ${x.step}: ${x.detail} (${x.ms} ms)`),
+    ...(d.hint?[`How to fix: ${d.hint}`]:[])].join("\n");
+  const copy=el(`<button class="btn ghost" style="margin-top:12px">⧉ Copy details</button>`);
+  copy.onclick=async()=>{ try{ await navigator.clipboard.writeText(text); toast("Details copied"); }
+    catch{ const ta=el(`<textarea rows="8" style="width:100%;margin-top:8px"></textarea>`); ta.value=text; body.appendChild(ta); ta.select(); toast("Select and copy the text below"); } };
+  body.appendChild(copy);
+  modal(title,body,null,"Close");
+}
+
 /* .lic file picker: parses the license file and hands {license_id, license_key, company, branch, ...}
    to onLoad. Returns {node, parse} — parse(text) also accepts a whole .lic pasted as text. */
 function licFilePicker(onLoad){
@@ -1026,26 +1053,30 @@ VIEWS.settings = async (main) => {
       {k:"password",label:"Password (blank = keep current)",type:"password",value:""},
       {k:"from_addr",label:"From address",value:e.from_addr||""},
       {k:"from_name",label:"From name",value:e.from_name||""},
-      {k:"use_tls",label:"Use STARTTLS",type:"select",options:[{v:"true",t:"Yes"},{v:"false",t:"No"}],value:String(e.use_tls)},
+      {k:"use_tls",label:"Use STARTTLS (port 587) — port 465 always uses SSL automatically",type:"select",options:[{v:"true",t:"Yes"},{v:"false",t:"No"}],value:String(e.use_tls)},
     ]);
     ec.appendChild(ef);
     const result=el(`<div id="emailResult" style="margin-top:12px"></div>`);
     const showResult=(okMsg,errMsg)=>{ result.innerHTML=""; result.appendChild(el(
       errMsg?`<div class="notice" style="background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.5);color:#fca5a5">✗ ${esc(errMsg)}</div>`
             :`<div class="notice" style="background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.5);color:#86efac">✓ ${esc(okMsg)}</div>`)); };
+    const busy=(b,on,label)=>{ b.disabled=on; b.textContent=on?"Testing…":label; };
     const save=el(`<button class="btn">Save &amp; verify</button>`);
-    save.onclick=async()=>{ try{ const v=ef._values(); v.use_tls=(v.use_tls==="true"); if(v.password==="") delete v.password;
+    save.onclick=async()=>{ busy(save,true); try{ const v=ef._values(); v.use_tls=(v.use_tls==="true"); if(v.password==="") delete v.password;
       const r=await api("/api/settings/email"+(scope?`?scope=${scope}`:""),{method:"PUT",body:v});
       const vr=r.verify||{};
       if(vr.ok){ showResult("Settings saved and SMTP login verified. Email delivery is working.",null); toast("Saved — SMTP verified ✓"); }
-      else { showResult(null, "Settings saved, but SMTP check failed: "+(vr.error||"unknown error")+"  (emails will fall back to the server outbox until this is fixed)"); toast("Saved, but SMTP failed",true); }
-    }catch(err){ showResult(null, err.message); toast(err.message,true); } };
+      else { showResult(null, "Settings saved, but SMTP check failed at: "+((vr.diagnostics||{}).failed_step||"unknown step")+" — see the details window. Emails fall back to the server outbox until this is fixed."); toast("Saved, but SMTP failed",true); }
+      if(vr.diagnostics) showSmtpReport(vr.diagnostics,"Save & verify — SMTP check");
+    }catch(err){ showResult(null, err.message); toast(err.message,true); } finally{ busy(save,false,"Save & verify"); } };
     const test=el(`<button class="btn ghost" style="margin-left:8px">Send test email</button>`);
     test.onclick=async()=>{ const to=prompt("Send test email to:", e.from_addr||""); if(!to) return;
+      busy(test,true);
       try{ const r=await api("/api/settings/email/test"+(scope?`?scope=${scope}`:""),{method:"POST",body:{to}});
         if(r.delivered){ showResult("Test email sent to "+to+" via SMTP.",null); toast("Email sent ✓"); }
-        else { showResult(null, "Email NOT sent — "+(r.detail||r.via)+". It was saved to the server outbox instead."); toast("Email not sent",true); }
-      }catch(err){ showResult(null, err.message); toast(err.message,true); } };
+        else { showResult(null, "Email NOT sent — failed at: "+((r.diagnostics||{}).failed_step||r.via)+". See the details window."); toast("Email not sent",true); }
+        if(r.diagnostics) showSmtpReport(r.diagnostics,"Send test email — details");
+      }catch(err){ showResult(null, err.message); toast(err.message,true); } finally{ busy(test,false,"Send test email"); } };
     const bar=el(`<div style="margin-top:12px"></div>`); bar.append(save,test); ec.appendChild(bar); ec.appendChild(result);
     main.appendChild(ec);
   }

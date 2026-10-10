@@ -57,7 +57,7 @@ def put_email(body: dict, request: Request, scope: str | None = None, db: Sessio
 @router.post("/email/verify")
 def verify_email(scope: str | None = None, db: Session = Depends(get_db),
                  user: AdminUser = Depends(require_roles(Role.CUSTOMER_OWNER))):
-    """Check SMTP connectivity + login without sending a message."""
+    """Check SMTP connectivity + login without sending a message (step-by-step diagnostics)."""
     tid = _scope_for(user, scope)
     return email_service.verify_smtp(ss.resolve_smtp(db, tid))
 
@@ -98,10 +98,7 @@ def test_email(body: dict, scope: str | None = None, db: Session = Depends(get_d
     to = (body.get("to") or user.email or "").strip()
     if not to:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide a 'to' address")
-    smtp = ss.resolve_smtp(db, tid)
-    res = email_service.send_email(
-        to=to, subject="Endpoint Management — SMTP test",
-        body="This is a test message confirming your email (SMTP) settings work.",
-        smtp=smtp,
-    )
-    return {"delivered": res["delivered"], "via": res["via"], "detail": res["detail"]}
+    # step-by-step SMTP conversation + real test message, so the UI can show exactly what failed
+    d = email_service.diagnose_smtp(ss.resolve_smtp(db, tid), send_to=to)
+    return {"delivered": d["ok"], "via": "smtp" if d["ok"] else "failed",
+            "detail": "sent" if d["ok"] else d["error"], "diagnostics": d}
