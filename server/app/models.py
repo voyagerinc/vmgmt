@@ -604,3 +604,26 @@ class SchemaVersion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     version: Mapped[int] = mapped_column(Integer, default=0)
     applied_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RestrictedApp(Base):
+    """Application restriction rules per device or tenant-wide (PRD §20).
+    Can strictly block or require an administrator password before allowing the app to run."""
+    __tablename__ = "restricted_apps"
+    __table_args__ = (
+        Index("ix_restricted_apps_tenant_device", "tenant_id", "device_id"),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[str | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), nullable=True, index=True)
+    # If device_id is None, this rule applies to all devices in the tenant.
+    app_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    process_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    require_admin_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_salt: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+

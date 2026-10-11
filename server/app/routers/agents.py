@@ -23,6 +23,7 @@ from ..models import (
     Policy,
     RemoteSession,
     RemoteSessionStatus,
+    RestrictedApp,
     ScreenshotJob,
     ScreenshotStatus,
     Software,
@@ -197,6 +198,18 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         policies_payload = [_policy_dict(p) for p in
                             db.query(Policy).filter(Policy.tenant_id == tid, Policy.enabled == True).all()]  # noqa: E712
 
+    # ---- restricted apps (device-specific + global) ----
+    restricted_payload = [{
+        "id": r.id, "app_name": r.app_name, "process_name": r.process_name,
+        "require_admin_password": r.require_admin_password,
+        "password_hash": r.password_hash, "password_salt": r.password_salt,
+        "enabled": r.enabled,
+    } for r in db.query(RestrictedApp).filter(
+        RestrictedApp.tenant_id == tid,
+        RestrictedApp.enabled == True,
+        (RestrictedApp.device_id == device.id) | (RestrictedApp.device_id == None)
+    ).all()]
+
     db.commit()
     return HeartbeatOut(
         heartbeat_interval=settings.heartbeat_interval_seconds,
@@ -204,6 +217,7 @@ def heartbeat(body: HeartbeatIn, request: Request, device: Device = Depends(get_
         policies=policies_payload,
         collection=device.collection or {},
         tracking=trk.agent_payload(db, device),
+        restricted_apps=restricted_payload,
         agent_update=_agent_update_offer(db, device, body.agent_version),
         screenshot_jobs=job_payloads,
         remote_sessions=sess_payloads,

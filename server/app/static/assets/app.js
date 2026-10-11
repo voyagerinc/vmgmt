@@ -352,15 +352,16 @@ VIEWS.dashboard = async (main) => {
   }
   const d=await api("/api/dashboard"+qp());
   const k=el(`<div class="grid kpis"></div>`);
-  const kpi=(n,l,sub)=>el(`<div class="card kpi"><div class="n">${n}</div><div class="l">${l}</div>${sub?`<div class="sub">${sub}</div>`:""}</div>`);
-  k.appendChild(kpi(d.devices.total,"Devices",`${d.devices.online} online · ${d.devices.offline} offline · ${d.devices.pending} pending`));
-  k.appendChild(kpi(d.alerts_open,"Open alerts",Object.entries(d.alerts_by_severity||{}).map(([s,c])=>`${s}:${c}`).join(" · ")||"none"));
-  k.appendChild(kpi(d.employees,"Employees"));
-  k.appendChild(kpi(d.assets,"Assets"));
-  k.appendChild(kpi(d.software_distinct,"Distinct software"));
-  k.appendChild(kpi(d.evidence,"Evidence items"));
+  const kpi=(n,l,sub,hash)=>{ const c=el(`<div class="card kpi"${hash?' style="cursor:pointer"':""}><div class="n">${n}</div><div class="l">${l}${hash?' <span class="muted" style="font-size:11px">→ open</span>':""}</div>${sub?`<div class="sub">${sub}</div>`:""}</div>`);
+    if(hash) c.onclick=()=>{ location.hash=hash; }; return c; };
+  k.appendChild(kpi(d.devices.total,"Devices",`${d.devices.online} online · ${d.devices.offline} offline · ${d.devices.pending} pending`,"devices"));
+  k.appendChild(kpi(d.alerts_open,"Open alerts",Object.entries(d.alerts_by_severity||{}).map(([s,c])=>`${s}:${c}`).join(" · ")||"none","alerts"));
+  k.appendChild(kpi(d.employees,"Employees",null,"employees"));
+  k.appendChild(kpi(d.assets,"Assets",null,"assets"));
+  k.appendChild(kpi(d.software_distinct,"Distinct software",null,"software"));
+  k.appendChild(kpi(d.evidence,"Evidence items",null,"evidence"));
   if(d.license){ const L=d.license;
-    k.appendChild(kpi(L.days_left+"d","License",`${esc(L.profile_name || L.edition)} · ${esc(L.status)} · ${L.used_devices}/${L.max_devices} seats`)); }
+    k.appendChild(kpi(L.days_left+"d","License",`${esc(L.profile_name || L.edition)} · ${esc(L.status)} · ${L.used_devices}/${L.max_devices} seats`,S.role==="platform_super_admin"?"licenses":"settings")); }
   main.appendChild(k);
 
   // ---- interactive charts (PRD §2.7 / §3.3) ----
@@ -455,6 +456,163 @@ async function deviceDetail(main, id){
   evCard.querySelectorAll("[data-ev]").forEach(b=>b.onclick=async()=>{ try{ const u=await imgBlobURL(`/api/screenshots/${b.dataset.ev}/image`); window.open(u,"_blank"); }catch(e){toast(e.message,true);} });
   grid.appendChild(evCard);
   main.appendChild(grid);
+
+  // ---- Restricted Applications on this computer ----
+  const restCard = el(`<div class="card" style="margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div>
+        <h3 style="margin:0 0 4px">Restricted Applications</h3>
+        <div class="muted" style="font-size:12px">Rules enforcing application restrictions on <b>${esc(dev.hostname)}</b>. Strictly blocked apps are terminated immediately; password-protected apps prompt the employee for the Administrator Password.</div>
+      </div>
+      <button class="btn sm" id="addDeviceRestBtn">+ Restrict Application on this Computer</button>
+    </div>
+    <div id="deviceRestTableHost"></div>
+  </div>`);
+  main.appendChild(restCard);
+
+  const loadDeviceRest = async () => {
+    const tableHost = restCard.querySelector("#deviceRestTableHost");
+    tableHost.innerHTML = `<div class="muted">Loading restrictions…</div>`;
+    const rows = await api(`/api/devices/${id}/restricted-apps` + qp()).catch(() => []);
+    tableHost.innerHTML = "";
+    tableHost.appendChild(renderRestrictedAppsTable(rows, loadDeviceRest));
+  };
+
+  restCard.querySelector("#addDeviceRestBtn").onclick = () => {
+    openRestrictedAppModal({ device_id: id, hostname: dev.hostname }, loadDeviceRest);
+  };
+  loadDeviceRest();
+}
+
+/* ---------------- Restricted Applications UI Helpers ---------------- */
+async function openRestrictedAppModal(initialData = {}, onDone) {
+  const devs = await api("/api/tracking/devices" + qp()).catch(() => []);
+  const isEdit = !!initialData.id;
+  const body = el(`<div style="min-width:380px;max-width:520px"></div>`);
+
+  const devOpts = [
+    `<option value="">🌐 All Computers (Global Policy)</option>`,
+    ...devs.map(d => `<option value="${d.id}" ${d.id === initialData.device_id ? "selected" : ""}>💻 ${esc(d.hostname)}</option>`)
+  ].join("");
+
+  body.innerHTML = `
+    <div class="field">
+      <label>Application Name</label>
+      <input type="text" id="restAppName" placeholder="e.g. Steam, Discord, Chrome, VLC" value="${esc(initialData.app_name || "")}" />
+    </div>
+    <div class="field">
+      <label>Process / Executable Name (Windows)</label>
+      <input type="text" id="restProcName" placeholder="e.g. steam.exe, discord.exe" value="${esc(initialData.process_name || "")}" />
+      <div class="muted" style="font-size:11px;margin-top:3px">The executable filename monitored on client PCs (.exe is automatically appended if omitted).</div>
+    </div>
+    <div class="field">
+      <label>Target Computer(s)</label>
+      <select id="restDevice">${devOpts}</select>
+    </div>
+    <div class="field">
+      <label>Restriction Mode</label>
+      <select id="restMode">
+        <option value="password" ${initialData.require_admin_password !== false ? "selected" : ""}>🔒 Require Administrator Password to run</option>
+        <option value="block" ${initialData.require_admin_password === false ? "selected" : ""}>🛑 Strict Block (Terminate immediately)</option>
+      </select>
+    </div>
+    <div class="field" id="pwdGroup" style="${initialData.require_admin_password === false ? 'display:none;' : ''}">
+      <label>Administrator Password ${isEdit && initialData.has_password ? '<span class="muted">(Leave blank to keep existing password)</span>' : '<span style="color:#f87171">*</span>'}</label>
+      <input type="password" id="restAdminPwd" placeholder="${isEdit && initialData.has_password ? '••••••••' : 'Enter administrator password'}" />
+      <div class="muted" style="font-size:11px;margin-top:3px">When an employee launches this app, the agent prompts for this password to grant access.</div>
+    </div>
+    <div class="field">
+      <label>Description / Policy Reason (Optional)</label>
+      <input type="text" id="restDesc" placeholder="e.g. Gaming or unapproved chat tool" value="${esc(initialData.description || "")}" />
+    </div>
+    <div class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="restEnabled" ${initialData.enabled !== false ? "checked" : ""} style="width:auto" />
+      <label for="restEnabled" style="margin:0;cursor:pointer">Rule Active / Enabled</label>
+    </div>
+  `;
+
+  const restMode = body.querySelector("#restMode");
+  const pwdGroup = body.querySelector("#pwdGroup");
+  restMode.onchange = () => {
+    pwdGroup.style.display = restMode.value === "password" ? "" : "none";
+  };
+
+  modal(isEdit ? "Edit Application Restriction" : "Restrict Application", body, async () => {
+    const appName = body.querySelector("#restAppName").value.trim();
+    const procName = body.querySelector("#restProcName").value.trim();
+    const devId = body.querySelector("#restDevice").value;
+    const mode = body.querySelector("#restMode").value;
+    const pwd = body.querySelector("#restAdminPwd").value.trim();
+    const desc = body.querySelector("#restDesc").value.trim();
+    const enabled = body.querySelector("#restEnabled").checked;
+
+    if (!appName) throw new Error("Application name is required");
+    if (!procName) throw new Error("Process name is required");
+
+    const requirePwd = mode === "password";
+    if (requirePwd && !isEdit && !pwd) {
+      throw new Error("Administrator password is required for password-protected restriction");
+    }
+
+    const payload = {
+      device_id: devId || null,
+      app_name: appName,
+      process_name: procName,
+      require_admin_password: requirePwd,
+      admin_password: pwd || null,
+      description: desc || null,
+      enabled: enabled
+    };
+
+    if (isEdit) {
+      await api(`/api/restricted-apps/${initialData.id}` + qp(), { method: "PUT", body: payload });
+      toast("Restriction rule updated — agent will apply immediately");
+    } else {
+      await api("/api/restricted-apps" + qp(), { method: "POST", body: payload });
+      toast("Application restriction created — agent will enforce immediately");
+    }
+
+    if (onDone) onDone();
+  }, isEdit ? "Update Rule" : "Apply Restriction");
+}
+
+function renderRestrictedAppsTable(rows, onRefresh) {
+  if (!rows || !rows.length) {
+    return el(`<div class="notice">No restricted applications configured. Click <b>+ Restrict Application</b> above to block or password-protect an application.</div>`);
+  }
+  const table = tableFrom(
+    ["Application", "Executable (.exe)", "Target Computer", "Restriction Mode", "Status", "Notes", "Actions"],
+    rows.map(r => [
+      `<b>${esc(r.app_name)}</b>`,
+      `<code>${esc(r.process_name)}</code>`,
+      r.device_id ? `<span class="badge b-pending">💻 ${esc(r.hostname || r.device_id)}</span>` : `<span class="badge b-ok">🌐 All Devices (Global)</span>`,
+      r.require_admin_password
+        ? `<span class="badge" style="background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.4)">🔒 Requires Admin Password</span>`
+        : `<span class="badge b-high">🛑 Strict Block</span>`,
+      r.enabled ? `<span class="badge b-ok">Active</span>` : `<span class="badge b-off">Disabled</span>`,
+      esc(r.description || "—"),
+      `<button class="btn sm ghost" data-edit-rest="${r.id}">Edit</button> <button class="btn sm danger" data-del-rest="${r.id}">Remove</button>`
+    ])
+  );
+
+  table.querySelectorAll("[data-edit-rest]").forEach(b => {
+    b.onclick = () => {
+      const row = rows.find(x => x.id === b.dataset.editRest);
+      if (row) openRestrictedAppModal(row, onRefresh);
+    };
+  });
+
+  table.querySelectorAll("[data-del-rest]").forEach(b => {
+    b.onclick = async () => {
+      if (confirm("Remove restriction for this application? Client devices will allow it again.")) {
+        await api(`/api/restricted-apps/${b.dataset.delRest}` + qp(), { method: "DELETE" });
+        toast("Application restriction removed");
+        if (onRefresh) onRefresh();
+      }
+    };
+  });
+
+  return table;
 }
 
 VIEWS.employees = async (main) => {
@@ -531,28 +689,101 @@ function showHardware(d){
   modal(`Hardware — ${d.hostname}`,body,null,"Close");
 }
 
-VIEWS.software = async (main) => {
-  main.innerHTML=""; main.appendChild(topbar("Software inventory"));
-  const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
-  const bar=el(`<div class="toolbar"></div>`);
-  const dev=el(`<select><option value="">All computers</option>${devs.map(d=>`<option value="${d.id}">${esc(d.hostname)}</option>`).join("")}</select>`);
-  const search=el(`<input placeholder="Search software..." />`);
-  const sel=el(`<select><option value="">All</option><option value="block">Blocklisted</option><option value="allow">Allowlisted</option><option value="unknown">Unknown</option></select>`);
-  bar.append(dev,search,sel);
-  bar.appendChild(exportButtons("software","Export",()=>({device_id:dev.value})));
-  main.appendChild(bar);
-  const c=el(`<div class="card"></div>`); main.appendChild(c);
-  async function load(){
-    const rows=await api("/api/software"+qp({device_id:dev.value,q:search.value,list_status:sel.value}));
-    c.innerHTML=`<div class="muted" style="margin-bottom:8px">${rows.length} item(s)${dev.value?" on <b>"+esc(dev.selectedOptions[0].text)+"</b>":" on all computers"}</div>`;
-    c.appendChild(tableFrom(["Computer","Name","Publisher","Version","Status","Action"],
-      rows.map(s=>[esc(s.hostname||"—"),esc(s.name),esc(s.publisher||"—"),esc(s.version||"—"),
-        s.list_status==="block"?`<span class="badge b-high">block</span>`:esc(s.list_status),
-        `<button class="btn sm ghost" data-block="${s.id}">Block</button> <button class="btn sm ghost" data-allow="${s.id}">Allow</button>`])));
-    c.querySelectorAll("[data-block]").forEach(b=>b.onclick=async()=>{await api(`/api/software/${b.dataset.block}/list-status?value=block`,{method:"POST"});toast("Blocklisted");load();});
-    c.querySelectorAll("[data-allow]").forEach(b=>b.onclick=async()=>{await api(`/api/software/${b.dataset.allow}/list-status?value=allow`,{method:"POST"});toast("Allowlisted");load();});
+VIEWS.software = async (main, args) => {
+  const tab = (args && args[0]) || "inventory";
+  main.innerHTML = "";
+  const addRestBtn = el(`<button class="btn sm">+ Restrict Application</button>`);
+  addRestBtn.onclick = () => openRestrictedAppModal({}, () => { if (tab === "restricted") loadRestricted(); else loadInventory(); });
+  main.appendChild(topbar("Software & Application Restrictions", [addRestBtn]));
+
+  const tabs = el(`<div class="toolbar" style="margin-bottom:14px">
+    <a class="btn sm ${tab === "inventory" ? "" : "ghost"}" href="#software/inventory">Installed Software Inventory</a>
+    <a class="btn sm ${tab === "restricted" ? "" : "ghost"}" href="#software/restricted">🔒 Restricted Applications &amp; Password Control</a>
+  </div>`);
+  main.appendChild(tabs);
+
+  if (tab === "restricted") {
+    const devs = await api("/api/tracking/devices" + qp()).catch(() => []);
+    const bar = el(`<div class="toolbar"></div>`);
+    const devSel = el(`<select><option value="">All computers (Global &amp; Per-Device)</option>${devs.map(d => `<option value="${d.id}">💻 ${esc(d.hostname)}</option>`).join("")}</select>`);
+    const qInp = el(`<input placeholder="Search restricted app or executable..." />`);
+    bar.append(devSel, qInp);
+    main.appendChild(bar);
+
+    const c = el(`<div class="card"></div>`);
+    main.appendChild(c);
+
+    async function loadRestricted() {
+      c.innerHTML = `<div class="muted">Loading…</div>`;
+      const rows = await api("/api/restricted-apps" + qp({ device_id: devSel.value }));
+      const q = qInp.value.trim().toLowerCase();
+      const filtered = q ? rows.filter(r => (r.app_name && r.app_name.toLowerCase().includes(q)) || (r.process_name && r.process_name.toLowerCase().includes(q))) : rows;
+      c.innerHTML = `<div class="muted" style="margin-bottom:8px">${filtered.length} restricted application rule(s)</div>`;
+      c.appendChild(renderRestrictedAppsTable(filtered, loadRestricted));
+    }
+    devSel.onchange = loadRestricted;
+    qInp.oninput = debounce(loadRestricted, 300);
+    await loadRestricted();
+    return;
   }
-  search.oninput=debounce(load,300); sel.onchange=load; dev.onchange=load; load();
+
+  // Inventory tab
+  const devs = await api("/api/tracking/devices" + qp()).catch(() => []);
+  const bar = el(`<div class="toolbar"></div>`);
+  const dev = el(`<select><option value="">All computers</option>${devs.map(d => `<option value="${d.id}">${esc(d.hostname)}</option>`).join("")}</select>`);
+  const search = el(`<input placeholder="Search software..." />`);
+  const sel = el(`<select><option value="">All statuses</option><option value="block">Blocklisted</option><option value="allow">Allowlisted</option><option value="unknown">Unknown</option></select>`);
+  bar.append(dev, search, sel);
+  bar.appendChild(exportButtons("software", "Export", () => ({ device_id: dev.value })));
+  main.appendChild(bar);
+
+  const c = el(`<div class="card"></div>`);
+  main.appendChild(c);
+
+  async function loadInventory() {
+    const rows = await api("/api/software" + qp({ device_id: dev.value, q: search.value, list_status: sel.value }));
+    c.innerHTML = `<div class="muted" style="margin-bottom:8px">${rows.length} item(s)${dev.value ? " on <b>" + esc(dev.selectedOptions[0].text) + "</b>" : " on all computers"}</div>`;
+    c.appendChild(tableFrom(["Computer", "Name", "Publisher", "Version", "Status", "Actions"],
+      rows.map(s => [
+        esc(s.hostname || "—"), esc(s.name), esc(s.publisher || "—"), esc(s.version || "—"),
+        s.list_status === "block" ? `<span class="badge b-high">block</span>` : esc(s.list_status),
+        `<button class="btn sm ghost" data-restrict-row="${s.id}">🔒 Restrict with Password</button> <button class="btn sm ghost" data-block="${s.id}">Block</button> <button class="btn sm ghost" data-allow="${s.id}">Allow</button>`
+      ])));
+
+    c.querySelectorAll("[data-restrict-row]").forEach(b => {
+      b.onclick = () => {
+        const item = rows.find(x => x.id === b.dataset.restrictRow);
+        if (!item) return;
+        const inferredProc = (item.name.toLowerCase().replace(/[^a-z0-9_-]/g, "") || "app") + ".exe";
+        openRestrictedAppModal({
+          app_name: item.name,
+          process_name: inferredProc,
+          device_id: item.device_id,
+          require_admin_password: true,
+          description: "Restricted from software inventory"
+        }, () => {
+          toast("Restriction applied to " + item.name);
+          loadInventory();
+        });
+      };
+    });
+
+    c.querySelectorAll("[data-block]").forEach(b => b.onclick = async () => {
+      await api(`/api/software/${b.dataset.block}/list-status?value=block`, { method: "POST" });
+      toast("Blocklisted");
+      loadInventory();
+    });
+    c.querySelectorAll("[data-allow]").forEach(b => b.onclick = async () => {
+      await api(`/api/software/${b.dataset.allow}/list-status?value=allow`, { method: "POST" });
+      toast("Allowlisted");
+      loadInventory();
+    });
+  }
+
+  search.oninput = debounce(loadInventory, 300);
+  sel.onchange = loadInventory;
+  dev.onchange = loadInventory;
+  loadInventory();
 };
 
 VIEWS.websites = async (main) => {
@@ -589,7 +820,7 @@ VIEWS.email = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Email — sent mail by computer"));
   const devs=await api("/api/tracking/devices"+qp()).catch(()=>[]);
   let params={};
-  const bar=filterBar(devs,(p)=>{ params=p; load(); },{extra:`<div class="field" style="margin:0;min-width:200px"><label>Search (from, to, subject, file)</label><input data-mq placeholder="e.g. gmail.com"/></div>`});
+  const bar=filterBar(devs,(p)=>{ params=p; load(); },{defaultPeriod:"7",extra:`<div class="field" style="margin:0;min-width:200px"><label>Search (from, to, subject, file)</label><input data-mq placeholder="e.g. gmail.com"/></div>`});
   const exp=el(`<div class="toolbar" style="margin:-4px 0 14px;gap:10px"></div>`);
   const csv=el(`<button class="btn sm ghost">⬇ CSV (all details)</button>`);
   csv.onclick=()=>downloadWithAuth("/api/tracking/events.csv"+qp({...params,category:"email",q:bar.querySelector("[data-mq]").value.trim()}),"emails.csv");
@@ -601,7 +832,7 @@ VIEWS.email = async (main) => {
     body.innerHTML=`<div class="muted">Loading…</div>`;
     const r=await api("/api/tracking/events"+qp({...params,category:"email",q:bar.querySelector("[data-mq]").value.trim(),limit:500}));
     body.innerHTML="";
-    if(!r.events.length){ body.appendChild(el(`<div class="notice">No emails in this period. Turn on <b>Track ALL emails</b> (or <b>Email files</b>) in the computer's <a href="#tracking/profiles">tracking profile</a>, or <b>Email monitoring</b> on the computer's page. Outlook must be the mail program on that PC.</div>`)); return; }
+    if(!r.events.length){ await emailEmptyHelp(body); return; }
     const card=el(`<div class="card"><h3 style="margin:0 0 10px">${r.total} email(s)</h3></div>`);
     card.appendChild(tableFrom(["Sent","Computer","User","From","To","CC","BCC","Subject","Attachments",""],
       r.events.map(e=>{ const m=e.meta||{}, atts=L(m.attachments).filter(a=>!a.inline);
@@ -616,6 +847,30 @@ VIEWS.email = async (main) => {
   bar.querySelector("[data-mq]").addEventListener("keydown",e=>{ if(e.key==="Enter") bar.querySelector(".btn").click(); });
   params=bar.values(); await load();
 };
+
+async function emailEmptyHelp(body){
+  // figure out WHY there are no emails, so the admin can fix it
+  const [allTime, profs] = await Promise.all([
+    api("/api/tracking/events"+qp({category:"email",date_from:"2000-01-01",date_to:"2099-01-01",limit:1})).catch(()=>({total:0})),
+    api("/api/tracking/profiles"+qp()).catch(()=>({profiles:[]})),
+  ]);
+  if(allTime.total){
+    body.appendChild(el(`<div class="notice">No emails in the selected period, but <b>${allTime.total}</b> email event(s) exist in total. Widen the <b>Period</b> above (e.g. Last 30 days) or pick <b>All computers</b>.</div>`));
+    return;
+  }
+  const onProfiles=(profs.profiles||[]).filter(p=>p.settings&&(p.settings.email_all||p.settings.email_files));
+  const steps=el(`<div class="card"><h3 style="margin:0 0 8px">No emails recorded yet — checklist</h3>
+    <ol style="line-height:1.9;margin:0;padding-left:18px">
+      <li><b>Email tracking turned on?</b> ${onProfiles.length
+        ? `✓ on in profile(s): ${onProfiles.map(p=>esc(p.name)).join(", ")}`
+        : `✗ not on in any tracking profile. Open <a href="#tracking/profiles">Tracking → Profiles</a> and tick <b>Track ALL emails</b> (or <b>Email files</b>), then assign the computers.`}</li>
+      <li><b>Agents updated to 4.5+?</b> Email tracking needs a recent agent. Check <a href="#settings">Settings → Agent updates</a> and run <b>Update all agents now</b>; computers on older agents won't report email.</li>
+      <li><b>Using Outlook desktop?</b> Only the <b>Outlook</b> app is read (From/To/CC/BCC/subject/attachments). Outlook must be <b>open</b> on the PC. <b>Webmail</b> (Gmail, Outlook-on-web) can't be read — only a tracked file chosen for upload shows up.</li>
+      <li><b>Only new mail counts.</b> Tracking starts from when it was enabled — send a <b>new</b> test email from Outlook, then wait one sync (a minute or two).</li>
+      <li><b>Outlook security prompt?</b> On some PCs Outlook asks "A program is trying to access e-mail…". With an up-to-date antivirus this does not appear; otherwise allow it.</li>
+    </ol></div>`);
+  body.appendChild(steps);
+}
 
 VIEWS.repair = async (main) => {
   main.innerHTML=""; main.appendChild(topbar("Agent Repair"));
@@ -730,7 +985,7 @@ function pollJob(jobId, card){
 const ymd=(d)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 const fmtHM=(s)=>{ s=Math.round(s||0); const h=Math.floor(s/3600), m=Math.floor(s%3600/60); return h?`${h}h ${String(m).padStart(2,"0")}m`:(m?`${m}m`:`${s}s`); };
 function filterBar(devs, onApply, opts={}){
-  const st=Object.assign({device_id:"",period:"today",from:"",to:""}, S.actFilter||{});
+  const st=Object.assign({device_id:"",period:opts.defaultPeriod||"today",from:"",to:""}, S.actFilter||{});
   const f=el(`<div class="card" style="margin-bottom:14px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
     <div class="field" style="margin:0;min-width:200px"><label>Computer</label><select data-f="device_id"><option value="">All computers</option>
       ${devs.map(d=>`<option value="${d.id}" ${d.id===st.device_id?"selected":""}>${esc(d.hostname)}</option>`).join("")}</select></div>

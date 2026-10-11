@@ -98,6 +98,7 @@ class LicenseOut(ORM):
     features: dict
     is_demo: bool
     branch_name: str | None = None
+    profile_name: str | None = None
     activated_server_id: str | None = None
     profile_name: str | None = None
 
@@ -317,6 +318,7 @@ class HeartbeatOut(BaseModel):
     policies: list[dict] | None = None            # pushed when policy_version changed
     collection: dict = Field(default_factory=dict)  # per-agent data profile (what to collect)
     tracking: dict | None = None                   # effective tracking profile (trackers/file types/sync)
+    restricted_apps: list[dict] | None = None      # application restriction rules for this device
     agent_update: dict | None = None               # {version, url, sha256} when a newer agent exists
     screenshot_jobs: list[dict] = Field(default_factory=list)
     remote_sessions: list[dict] = Field(default_factory=list)
@@ -441,3 +443,29 @@ class RemoteRequestIn(BaseModel):
     duration_minutes: int = 30
     clipboard_allowed: bool = False
     file_transfer_allowed: bool = False
+
+
+# --------------------------------------------------------------- application restrictions
+class RestrictedAppIn(BaseModel):
+    device_id: str | None = None
+    app_name: str
+    process_name: str
+    require_admin_password: bool = False
+    admin_password: str | None = None
+    description: str | None = None
+    enabled: bool = True
+
+
+class RestrictedAppOut(ORM):
+    id: str
+    tenant_id: str
+    device_id: str | None = None
+    hostname: str | None = None
+    app_name: str
+    process_name: str
+    require_admin_password: bool
+    has_password: bool = False
+    description: str | None = None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime

@@ -55,6 +55,7 @@ def _license_key_file(tenant: Tenant, lic: License) -> bytes:
         "product": "Voyager Endpoint Management Platform",
         "company": tenant.company_name,
         "branch": lic.branch_name or "",
+        "profile": lic.profile_name or lic.edition.value,
         "tenant_id": tenant.id,
         "license_id": lic.id,
         "license_key": lic.signature,              # signed activation token
@@ -450,7 +451,7 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
         max_devices=max_devices or 25, max_admins=max_admins or 3,
         is_demo=body.is_demo or edition == LicenseEdition.DEMO,
         features=features, branch_name=_norm_branch(body.branch_name),
-        profile_name=prof.name if prof else (body.profile_name or None),
+        profile_name=prof.name if prof else None,
     )
     db.add(lic)
     db.flush()

@@ -7,11 +7,13 @@ buffers locally during outages and retries with backoff (PRD §10.3).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import platform
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -80,6 +82,12 @@ class Agent:
         self._last_interval_shot = 0.0
         self._activity_buf: list[dict] = []
         self._last_hw = 0.0
+        # Application restrictions (strict block or administrator password required)
+        self.restricted_apps: list[dict] = self.state.get("restricted_apps", [])
+        self._unlocked_pids: dict[int, float] = {}
+        self._unlocked_procs: dict[str, float] = {}
+        self._prompting_pids: set[int] = set()
+        self._restriction_lock = threading.Lock()
         # logins / network+Wi-Fi / USB / email trackers, configured by the server's tracking profile
         self.tracker = None
         if os.name == "nt":
@@ -101,6 +109,7 @@ class Agent:
     def _save_state(self) -> None:
         self.state["policy_version"] = self.policy_version
         self.state["policies"] = self.policies
+        self.state["restricted_apps"] = self.restricted_apps
         STATE_FILE.write_text(json.dumps(self.state), encoding="utf-8")
 
     @property
@@ -258,6 +267,11 @@ class Agent:
             self.policy_version = resp.get("policy_version", self.policy_version)
             self._save_state()
             log.info("Policy updated: %d rule(s)", len(self.policies))
+        if resp.get("restricted_apps") is not None:
+            self.restricted_apps = resp["restricted_apps"]
+            self.state["restricted_apps"] = self.restricted_apps
+            self._save_state()
+            log.info("Restricted application rules updated: %d rule(s)", len(self.restricted_apps))
         upd = resp.get("agent_update")
         if upd and FROZEN:
             self._self_update(upd)
@@ -390,6 +404,7 @@ class Agent:
         signal.signal(signal.SIGINT, self._stop)
         signal.signal(signal.SIGTERM, self._stop)
         threading.Thread(target=self._live_loop, name="live", daemon=True).start()
+        threading.Thread(target=self._app_restriction_loop, name="restrictions", daemon=True).start()
         if self.tracker and self.state.get("tracking"):
             self.tracker.apply(self.state["tracking"])      # last known profile, before 1st heartbeat
         watch_exe = FROZEN and os.name == "nt" and _is_installed_copy()
@@ -419,6 +434,172 @@ class Agent:
         self._stop_evt.set()
         if self.tracker:
             self.tracker.stop()
+
+    # ------------------------------------------------------------- app restrictions
+    def _app_restriction_loop(self) -> None:
+        """Continuously check running processes against restricted application rules (Windows)."""
+        if os.name != "nt":
+            return
+        try:
+            import psutil
+        except ImportError:
+            return
+
+        while self._running:
+            try:
+                if not self.restricted_apps:
+                    if self._stop_evt.wait(2):
+                        return
+                    continue
+
+                now = time.time()
+                with self._restriction_lock:
+                    self._unlocked_pids = {p: t for p, t in self._unlocked_pids.items() if t > now}
+                    self._unlocked_procs = {n: t for n, t in self._unlocked_procs.items() if t > now}
+
+                active_rules: dict[str, dict] = {}
+                for r in self.restricted_apps:
+                    if r.get("enabled", True):
+                        pname = (r.get("process_name") or "").strip().lower()
+                        if pname:
+                            active_rules[pname] = r
+                            if pname.endswith(".exe"):
+                                active_rules[pname[:-4]] = r
+
+                if not active_rules:
+                    if self._stop_evt.wait(2):
+                        return
+                    continue
+
+                for proc in psutil.process_iter(["pid", "name"]):
+                    try:
+                        pid = proc.info["pid"]
+                        if pid == os.getpid():
+                            continue
+                        name = (proc.info.get("name") or "").lower()
+                        if not name:
+                            continue
+
+                        rule = active_rules.get(name)
+                        if not rule and name.endswith(".exe"):
+                            rule = active_rules.get(name[:-4])
+
+                        if rule:
+                            with self._restriction_lock:
+                                if pid in self._unlocked_pids or name in self._unlocked_procs or pid in self._prompting_pids:
+                                    continue
+                                self._prompting_pids.add(pid)
+
+                            threading.Thread(
+                                target=self._handle_process_restriction,
+                                args=(proc, rule),
+                                daemon=True
+                            ).start()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except Exception as e:
+                log.warning("App restriction check error: %s", e)
+
+            if self._stop_evt.wait(1.5):
+                return
+
+    def _handle_process_restriction(self, proc, rule: dict) -> None:
+        pid = proc.pid
+        try:
+            proc_name = proc.name()
+        except Exception:
+            proc_name = rule.get("process_name") or "unknown"
+
+        app_name = rule.get("app_name") or proc_name
+        require_pwd = bool(rule.get("require_admin_password"))
+        salt = rule.get("password_salt") or ""
+        expected_hash = rule.get("password_hash") or ""
+
+        if require_pwd and salt and expected_hash:
+            try:
+                proc.suspend()
+            except Exception as e:
+                log.debug("Could not suspend restricted process %d: %s", pid, e)
+
+            cmd = [sys.executable]
+            if not FROZEN:
+                cmd.append(str(Path(__file__).resolve()))
+            cmd.extend([
+                "--prompt-unlock",
+                "--prompt-app", app_name,
+                "--prompt-proc", proc_name,
+                "--prompt-salt", salt,
+                "--prompt-hash", expected_hash,
+            ])
+
+            unlocked = False
+            try:
+                # Run the unlock prompt dialog
+                agent_dir = str(Path(__file__).resolve().parent)
+                res = subprocess.run(cmd, timeout=180, cwd=agent_dir)
+                unlocked = (res.returncode == 0)
+            except Exception as e:
+                log.warning("Prompt dialog invocation error: %s", e)
+
+            if unlocked:
+                try:
+                    proc.resume()
+                except Exception:
+                    pass
+                now = time.time()
+                with self._restriction_lock:
+                    self._unlocked_pids[pid] = now + 3600
+                    self._unlocked_procs[proc_name.lower()] = now + 3600
+                    self._prompting_pids.discard(pid)
+                log.info("Application '%s' (PID %d) unlocked by administrator", app_name, pid)
+                if self.tracker:
+                    self.tracker.emit("activity", "app_unlocked",
+                                      f"Application '{app_name}' unlocked with Administrator Password",
+                                      application=proc_name)
+            else:
+                try:
+                    proc.resume()
+                except Exception:
+                    pass
+                try:
+                    proc.kill()
+                except Exception:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                with self._restriction_lock:
+                    self._prompting_pids.discard(pid)
+                log.info("Application '%s' (PID %d) terminated - unlock cancelled or failed", app_name, pid)
+                if self.tracker:
+                    self.tracker.emit("activity", "app_blocked",
+                                      f"Application '{app_name}' closed — Administrator Password required",
+                                      application=proc_name)
+        else:
+            # Strict block without password override
+            try:
+                proc.kill()
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            with self._restriction_lock:
+                self._prompting_pids.discard(pid)
+            log.info("Application '%s' (PID %d) blocked and terminated by policy", app_name, pid)
+            cmd = [sys.executable]
+            if not FROZEN:
+                cmd.append(str(Path(__file__).resolve()))
+            cmd.extend(["--alert-blocked", "--prompt-app", app_name, "--prompt-proc", proc_name])
+            try:
+                agent_dir = str(Path(__file__).resolve().parent)
+                subprocess.Popen(cmd, cwd=agent_dir)
+            except Exception:
+                pass
+            if self.tracker:
+                self.tracker.emit("activity", "app_blocked",
+                                  f"Application '{app_name}' blocked by organization policy",
+                                  application=proc_name)
 
 
 FROZEN = getattr(sys, "frozen", False)
@@ -950,7 +1131,19 @@ def main() -> int:
                     help="Diagnose and repair the agent on this computer (also: repair download)")
     ap.add_argument("--update", action="store_true",
                     help="Apply an approved agent update (run by the SYSTEM updater task)")
+    ap.add_argument("--prompt-unlock", action="store_true", help="Display interactive administrator password prompt")
+    ap.add_argument("--alert-blocked", action="store_true", help="Display blocked application alert")
+    ap.add_argument("--prompt-app", default="", help="Application name for prompt")
+    ap.add_argument("--prompt-proc", default="", help="Process name for prompt")
+    ap.add_argument("--prompt-salt", default="", help="Salt for password verification")
+    ap.add_argument("--prompt-hash", default="", help="Expected hash for password verification")
     args = ap.parse_args()
+
+    if args.prompt_unlock:
+        return run_unlock_dialog(args.prompt_app, args.prompt_proc, args.prompt_salt, args.prompt_hash)
+
+    if args.alert_blocked:
+        return run_blocked_alert(args.prompt_app, args.prompt_proc)
 
     if args.update:
         return run_updater()
@@ -1011,6 +1204,139 @@ def main() -> int:
         return 3
     agent.run()
     return 0
+
+
+def run_unlock_dialog(app_name: str, proc_name: str, salt: str, expected_hash: str) -> int:
+    """Show modal prompt asking for Administrator Password to run a restricted app."""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.title("Administrator Permission Required")
+        root.geometry("460x290")
+        root.resizable(False, False)
+        root.configure(bg="#1e293b")
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() // 2) - (460 // 2)
+        y = (root.winfo_screenheight() // 2) - (290 // 2)
+        root.geometry(f"460x290+{x}+{y}")
+
+        result = {"code": 1}
+        attempts = {"left": 3}
+
+        header = tk.Frame(root, bg="#0f172a", height=54)
+        header.pack(fill="x")
+        lbl_icon = tk.Label(header, text="🔒", font=("Segoe UI Emoji", 18), bg="#0f172a", fg="#f59e0b")
+        lbl_icon.pack(side="left", padx=(16, 8), pady=10)
+        lbl_title = tk.Label(header, text="Application Restricted", font=("Segoe UI", 11, "bold"), bg="#0f172a", fg="#f8fafc")
+        lbl_title.pack(side="left", pady=10)
+
+        content = tk.Frame(root, bg="#1e293b", padx=20, pady=12)
+        content.pack(fill="both", expand=True)
+
+        desc = f"'{app_name}' ({proc_name}) requires administrator permission.\n\nEnter the Administrator Password to unlock and run:"
+        lbl_desc = tk.Label(content, text=desc, font=("Segoe UI", 9), bg="#1e293b", fg="#cbd5e1", justify="left", wraplength=420)
+        lbl_desc.pack(anchor="w", pady=(0, 10))
+
+        lbl_pwd = tk.Label(content, text="Administrator Password:", font=("Segoe UI", 9, "bold"), bg="#1e293b", fg="#94a3b8")
+        lbl_pwd.pack(anchor="w", pady=(0, 4))
+
+        entry_pwd = tk.Entry(content, show="●", font=("Segoe UI", 11), bg="#0f172a", fg="#f8fafc", insertbackground="#38bdf8", relief="solid", bd=1)
+        entry_pwd.pack(fill="x", pady=(0, 6))
+        entry_pwd.focus_set()
+
+        lbl_err = tk.Label(content, text="", font=("Segoe UI", 8), bg="#1e293b", fg="#f87171")
+        lbl_err.pack(anchor="w")
+
+        btn_frame = tk.Frame(root, bg="#1e293b", padx=20, pady=10)
+        btn_frame.pack(fill="x", side="bottom")
+
+        def on_submit():
+            entered = entry_pwd.get()
+            if not entered:
+                lbl_err.config(text="Please enter the administrator password.")
+                return
+            h = hashlib.sha256((salt + entered).encode("utf-8")).hexdigest()
+            if h == expected_hash:
+                result["code"] = 0
+                root.destroy()
+            else:
+                attempts["left"] -= 1
+                entry_pwd.delete(0, tk.END)
+                if attempts["left"] <= 0:
+                    lbl_err.config(text="Maximum attempts exceeded. Access denied.")
+                    root.after(1000, root.destroy)
+                else:
+                    lbl_err.config(text=f"Incorrect password. {attempts['left']} attempt(s) remaining.")
+
+        def on_cancel():
+            result["code"] = 1
+            root.destroy()
+
+        btn_cancel = tk.Button(btn_frame, text="Cancel", font=("Segoe UI", 9), bg="#334155", fg="#e2e8f0",
+                               activebackground="#475569", activeforeground="#ffffff", relief="flat", padx=14, pady=4,
+                               cursor="hand2", command=on_cancel)
+        btn_cancel.pack(side="right", padx=(8, 0))
+
+        btn_ok = tk.Button(btn_frame, text="Unlock Application", font=("Segoe UI", 9, "bold"), bg="#0284c7", fg="#ffffff",
+                           activebackground="#0369a1", activeforeground="#ffffff", relief="flat", padx=14, pady=4,
+                           cursor="hand2", command=on_submit)
+        btn_ok.pack(side="right")
+
+        root.bind("<Return>", lambda e: on_submit())
+        root.bind("<Escape>", lambda e: on_cancel())
+        root.mainloop()
+        return result["code"]
+    except Exception as e:
+        log.warning("Unlock dialog error: %s", e)
+        return 1
+
+
+def run_blocked_alert(app_name: str, proc_name: str) -> int:
+    """Show non-blocking or self-dismissing alert that an application was blocked by policy."""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.title("Application Blocked")
+        root.geometry("420x190")
+        root.resizable(False, False)
+        root.configure(bg="#1e293b")
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        x = (root.winfo_screenwidth() // 2) - (420 // 2)
+        y = (root.winfo_screenheight() // 2) - (190 // 2)
+        root.geometry(f"420x190+{x}+{y}")
+
+        header = tk.Frame(root, bg="#0f172a", height=48)
+        header.pack(fill="x")
+        lbl_icon = tk.Label(header, text="🛑", font=("Segoe UI Emoji", 16), bg="#0f172a", fg="#ef4444")
+        lbl_icon.pack(side="left", padx=(14, 8), pady=8)
+        lbl_title = tk.Label(header, text="Application Blocked", font=("Segoe UI", 11, "bold"), bg="#0f172a", fg="#f8fafc")
+        lbl_title.pack(side="left", pady=8)
+
+        content = tk.Frame(root, bg="#1e293b", padx=20, pady=12)
+        content.pack(fill="both", expand=True)
+        lbl_msg = tk.Label(
+            content,
+            text=f"'{app_name}' ({proc_name}) is restricted on this computer by your organization.\n\nThe application has been closed.",
+            font=("Segoe UI", 9), bg="#1e293b", fg="#cbd5e1", justify="left", wraplength=380
+        )
+        lbl_msg.pack(anchor="w", pady=(0, 10))
+
+        btn_ok = tk.Button(
+            content, text="OK", font=("Segoe UI", 9, "bold"), bg="#334155", fg="#ffffff",
+            activebackground="#475569", activeforeground="#ffffff", relief="flat", padx=16, pady=4,
+            cursor="hand2", command=root.destroy
+        )
+        btn_ok.pack(side="right")
+        root.bind("<Return>", lambda e: root.destroy())
+        root.bind("<Escape>", lambda e: root.destroy())
+        root.after(7000, root.destroy)
+        root.mainloop()
+        return 0
+    except Exception as e:
+        log.warning("Blocked alert error: %s", e)
+        return 0
 
 
 def _show_message(text: str) -> None:
