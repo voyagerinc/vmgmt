@@ -29,6 +29,7 @@ from .routers import (
     inventory,
     license_profiles,
     policies,
+    quotation,
     portal,
     reports,
     restricted_apps,
@@ -191,7 +192,7 @@ async def security_headers(request: Request, call_next):
 # API routers
 for r in (auth, portal, users, agents, devices, directory, inventory, policies, alerts,
           evidence, reports, settings_router, downloads, system_router, tracking_router, agent_updates, deploy,
-          license_profiles, restricted_apps):
+          license_profiles, restricted_apps, quotation):
     app.include_router(r.router)
 
 

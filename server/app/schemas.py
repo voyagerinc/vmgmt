@@ -49,9 +49,19 @@ class PasswordChange(BaseModel):
 class TenantIn(BaseModel):
     company_name: str
     address: str | None = None
+    gst_no: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     deployment_model: str = "on_premise"
+
+
+class TenantDetailsIn(BaseModel):
+    """Edit a customer's billing details (for quotations)."""
+    company_name: str | None = None
+    address: str | None = None
+    gst_no: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
 
 
 class TenantOut(ORM):
@@ -59,6 +69,8 @@ class TenantOut(ORM):
     company_name: str
     status: str
     deployment_model: str
+    address: str | None = None
+    gst_no: str | None = None
     contact_email: str | None = None
     contact_phone: str | None = None
     evidence_retention_days: int
@@ -137,6 +149,7 @@ class ProvisionIn(BaseModel):
     """One-shot customer provisioning: company + owner login + license + email."""
     company_name: str
     address: str | None = None
+    gst_no: str | None = None
     contact_email: str                      # registered email (receives the license key)
     contact_phone: str | None = None
     deployment_model: str = "on_premise"

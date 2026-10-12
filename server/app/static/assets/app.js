@@ -162,7 +162,7 @@ function renderShell(){
   const nav=el(`<div class="nav"></div>`);
 
   const items = isPlatform
-    ? [["licenses","Licenses & Tenants","🔑"],["license_profiles","License Types","🏷"],["downloads","Server Downloads","⬇"],["audit","Audit Logs","❏"],["settings","Settings","⋯"]]
+    ? [["licenses","Licenses & Tenants","🔑"],["license_profiles","License Types","🏷"],["quotation","Quotation","🧾"],["downloads","Server Downloads","⬇"],["audit","Audit Logs","❏"],["settings","Settings","⋯"]]
     : NAV.filter(([k])=>!["licenses"].includes(k));
 
   items.forEach(([k,label,icon])=>{ nav.appendChild(el(`<a href="#${k}" data-k="${k}"><span>${icon}</span>${esc(label)}</a>`)); });
@@ -870,6 +870,137 @@ async function emailEmptyHelp(body){
       <li><b>Outlook security prompt?</b> On some PCs Outlook asks "A program is trying to access e-mail…". With an up-to-date antivirus this does not appear; otherwise allow it.</li>
     </ol></div>`);
   body.appendChild(steps);
+}
+
+VIEWS.quotation = async (main) => {
+  main.innerHTML=""; main.appendChild(topbar("Quotation"));
+  const [cfg, tenants] = await Promise.all([
+    api("/api/quotation/settings").catch(()=>({company:{},next_number:""})),
+    api("/api/tenants").catch(()=>[]),
+  ]);
+  const co=cfg.company||{};
+  // ---- your company (seller) ----
+  const sellerCard=el(`<div class="card" style="margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Your company (appears on every quotation)</h3><button class="btn sm ghost" id="editCo">Edit</button></div>
+    <div id="coView" class="muted" style="margin-top:8px">${co.company_name?`<b>${esc(co.company_name)}</b><br>${esc(co.address||"").replace(/\n/g,"<br>")}<br>${co.gst_no?"GSTIN: "+esc(co.gst_no):""} ${co.phone?" · "+esc(co.phone):""} ${co.email?" · "+esc(co.email):""}`:"Not set — click Edit to add your company name, address and GST No."}</div></div>`);
+  main.appendChild(sellerCard);
+  sellerCard.querySelector("#editCo").onclick=()=>editSellerCompany(co,()=>route());
+
+  // ---- quotation builder ----
+  const card=el(`<div class="card"></div>`); main.appendChild(card);
+  card.appendChild(el(`<h3 style="margin:0 0 10px">New quotation</h3>`));
+  const head=el(`<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:12px">
+    <div class="field" style="margin:0;min-width:240px"><label>Customer</label><select id="qCust"><option value="">— pick a customer —</option>${tenants.map(t=>`<option value="${t.id}">${esc(t.company_name)}</option>`).join("")}</select></div>
+    <div class="field" style="margin:0"><label>Quotation No</label><input id="qNo" value="${esc(cfg.next_number||"")}" style="width:150px"/></div>
+    <div class="field" style="margin:0"><label>Date</label><input id="qDate" type="date"/></div>
+    <div class="field" style="margin:0"><label>GST %</label><input id="qGst" type="number" value="18" style="width:80px"/></div>
+  </div>`);
+  card.appendChild(head);
+  head.querySelector("#qDate").value=ymd(new Date());
+  // customer (buyer) block, editable
+  const buyer=el(`<div class="field" style="max-width:520px"><label>Bill to (customer) — edit if needed</label>
+    <input id="bName" placeholder="Customer company name" style="margin-bottom:6px"/>
+    <textarea id="bAddr" rows="3" placeholder="Customer address"></textarea>
+    <input id="bGst" placeholder="Customer GST No" style="margin-top:6px"/></div>`);
+  card.appendChild(buyer);
+  head.querySelector("#qCust").onchange=(e)=>{ const t=tenants.find(x=>x.id===e.target.value)||{};
+    buyer.querySelector("#bName").value=t.company_name||""; buyer.querySelector("#bAddr").value=t.address||""; buyer.querySelector("#bGst").value=t.gst_no||"";
+    if(e.target.value && !t.gst_no) toast("This customer has no GST No saved — type it here, or add it on the customer.",false); };
+  // line items
+  const items=el(`<div style="margin-top:12px"></div>`); card.appendChild(items);
+  const rowsBox=el(`<table style="width:100%"><thead><tr><th style="text-align:left">Description</th><th style="width:70px">Qty</th><th style="width:110px">Rate</th><th style="width:120px">Amount</th><th style="width:40px"></th></tr></thead><tbody></tbody></table>`);
+  items.appendChild(rowsBox);
+  const tbody=rowsBox.querySelector("tbody");
+  const totalsBox=el(`<div style="text-align:right;margin-top:10px;font-size:14px"></div>`); card.appendChild(totalsBox);
+  const addRow=(desc="",qty=1,rate=0)=>{ const tr=el(`<tr>
+    <td><input class="d" value="${esc(desc)}" placeholder="e.g. Voyager Endpoint Agent — 50 devices, 1 year"/></td>
+    <td><input class="q" type="number" value="${qty}" style="width:60px"/></td>
+    <td><input class="r" type="number" value="${rate}" style="width:100px"/></td>
+    <td class="amt" style="text-align:right">0.00</td>
+    <td><button class="btn sm ghost del">✕</button></td></tr>`);
+    tr.querySelectorAll("input").forEach(i=>i.oninput=recalc);
+    tr.querySelector(".del").onclick=()=>{ tr.remove(); recalc(); };
+    tbody.appendChild(tr); recalc(); };
+  const money=(n)=>"₹"+(Math.round(n*100)/100).toLocaleString("en-IN",{minimumFractionDigits:2});
+  function recalc(){ let sub=0;
+    tbody.querySelectorAll("tr").forEach(tr=>{ const q=+tr.querySelector(".q").value||0, r=+tr.querySelector(".r").value||0; const a=q*r; sub+=a; tr.querySelector(".amt").textContent=(Math.round(a*100)/100).toFixed(2); });
+    const g=+head.querySelector("#qGst").value||0; const gst=sub*g/100;
+    totalsBox.innerHTML=`Subtotal: <b>${money(sub)}</b><br>GST (${g}%): <b>${money(gst)}</b><br><span style="font-size:17px">Grand total: <b>${money(sub+gst)}</b></span>`;
+  }
+  head.querySelector("#qGst").oninput=recalc;
+  const addBtn=el(`<button class="btn sm ghost" style="margin-top:8px">+ Add line</button>`); addBtn.onclick=()=>addRow(); card.appendChild(addBtn);
+  addRow("Voyager Endpoint Management — annual subscription",1,0);
+  // print
+  const bar=el(`<div class="toolbar" style="margin-top:16px"><button class="btn" id="qPrint">🖨 Print / Save as PDF</button>
+    <span class="muted" style="font-size:12px">Opens the browser print dialog — choose your printer, or “Save as PDF”.</span></div>`);
+  card.appendChild(bar);
+  bar.querySelector("#qPrint").onclick=async()=>{
+    if(!co.company_name){ toast("Set your company details first (Edit above).",true); return; }
+    if(!buyer.querySelector("#bName").value.trim()){ toast("Pick or enter the customer.",true); return; }
+    let number=head.querySelector("#qNo").value.trim();
+    try{ const r=await api("/api/quotation/number",{method:"POST"}); number=r.number; head.querySelector("#qNo").value=number; }catch(e){}
+    const lines=[...tbody.querySelectorAll("tr")].map(tr=>({d:tr.querySelector(".d").value,q:+tr.querySelector(".q").value||0,r:+tr.querySelector(".r").value||0})).filter(x=>x.d.trim()||x.r);
+    printQuotation({co,number,date:head.querySelector("#qDate").value,gstPct:+head.querySelector("#qGst").value||0,
+      buyer:{name:buyer.querySelector("#bName").value,addr:buyer.querySelector("#bAddr").value,gst:buyer.querySelector("#bGst").value},lines});
+  };
+};
+function editTenantDetails(t){
+  if(!t) return;
+  const f=fields([
+    {k:"company_name",label:"Company name",value:t.company_name||""},
+    {k:"address",label:"Address (for quotation / invoice)",type:"textarea",value:t.address||""},
+    {k:"gst_no",label:"GST No",value:t.gst_no||""},
+    {k:"contact_email",label:"Registered email",type:"email",value:t.contact_email||""},
+    {k:"contact_phone",label:"Phone",value:t.contact_phone||""},
+  ]);
+  modal(`Edit — ${esc(t.company_name)}`,f,async()=>{ await api(`/api/tenants/${t.id}/details`,{method:"PATCH",body:f._values()}); toast("Customer details saved"); route(); },"Save");
+}
+function editSellerCompany(co, onDone){
+  const f=fields([
+    {k:"company_name",label:"Your company name",value:co.company_name||""},
+    {k:"address",label:"Address",type:"textarea",value:co.address||""},
+    {k:"gst_no",label:"GST No (GSTIN)",value:co.gst_no||""},
+    {k:"phone",label:"Phone",value:co.phone||""},
+    {k:"email",label:"Email",value:co.email||""},
+    {k:"terms",label:"Terms & conditions (shown on quote)",type:"textarea",value:co.terms||""},
+    {k:"bank_details",label:"Bank details (optional)",type:"textarea",value:co.bank_details||""},
+  ]);
+  modal("Your company details",f,async()=>{ await api("/api/quotation/company",{method:"PUT",body:f._values()}); toast("Company details saved"); onDone&&onDone(); },"Save");
+}
+function printQuotation(q){
+  const esc2=(s)=>String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  const nl=(s)=>esc2(s).replace(/\n/g,"<br>");
+  const money=(n)=>"₹"+(Math.round(n*100)/100).toLocaleString("en-IN",{minimumFractionDigits:2});
+  let sub=0; const rows=q.lines.map((l,i)=>{ const a=l.q*l.r; sub+=a; return `<tr><td>${i+1}</td><td>${esc2(l.d)}</td><td style="text-align:center">${l.q}</td><td style="text-align:right">${money(l.r)}</td><td style="text-align:right">${money(a)}</td></tr>`; }).join("");
+  const gst=sub*q.gstPct/100;
+  const dateStr=q.date? new Date(q.date).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}):"";
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Quotation ${esc2(q.number)}</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:32px;font-size:13px}
+  h1{text-align:center;letter-spacing:3px;margin:0 0 4px;font-size:26px}.sub{text-align:center;color:#555;margin-bottom:18px}
+  .blocks{display:flex;justify-content:space-between;gap:24px;margin:18px 0}
+  .blk{flex:1;border:1px solid #ccc;border-radius:6px;padding:10px 12px}.blk h4{margin:0 0 6px;font-size:12px;color:#555;text-transform:uppercase}
+  .blk .nm{font-weight:bold;font-size:15px}.meta{text-align:right}
+  table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #ccc;padding:7px 8px}th{background:#f0f2f7;text-align:left}
+  tfoot td{border:none;padding:4px 8px}.tot{text-align:right}.grand{font-size:16px;font-weight:bold}
+  .terms{margin-top:22px;white-space:pre-wrap;color:#333;font-size:12px}@media print{body{margin:12mm}}</style></head>
+  <body>
+  <h1>QUOTATION</h1><div class="sub">${esc2(q.co.company_name)}</div>
+  <div style="display:flex;justify-content:space-between">
+    <div><b>${esc2(q.co.company_name)}</b><br>${nl(q.co.address)}<br>${q.co.gst_no?"GSTIN: "+esc2(q.co.gst_no)+"<br>":""}${q.co.phone?"Ph: "+esc2(q.co.phone)+" ":""}${q.co.email?esc2(q.co.email):""}</div>
+    <div class="meta">Quotation No: <b>${esc2(q.number)}</b><br>Date: <b>${esc2(dateStr)}</b></div>
+  </div>
+  <div class="blocks"><div class="blk"><h4>Bill to</h4><div class="nm">${esc2(q.buyer.name)}</div>${nl(q.buyer.addr)}<br>${q.buyer.gst?"GSTIN: "+esc2(q.buyer.gst):""}</div></div>
+  <table><thead><tr><th style="width:36px">#</th><th>Description</th><th style="width:50px;text-align:center">Qty</th><th style="width:110px;text-align:right">Rate</th><th style="width:120px;text-align:right">Amount</th></tr></thead>
+  <tbody>${rows}</tbody>
+  <tfoot><tr><td colspan="4" class="tot">Subtotal</td><td class="tot">${money(sub)}</td></tr>
+  <tr><td colspan="4" class="tot">GST (${q.gstPct}%)</td><td class="tot">${money(gst)}</td></tr>
+  <tr><td colspan="4" class="tot grand">Grand Total</td><td class="tot grand">${money(sub+gst)}</td></tr></tfoot></table>
+  ${q.co.terms?`<div class="terms"><b>Terms &amp; Conditions</b><br>${nl(q.co.terms)}</div>`:""}
+  ${q.co.bank_details?`<div class="terms"><b>Bank details</b><br>${nl(q.co.bank_details)}</div>`:""}
+  <div class="terms" style="margin-top:28px">For ${esc2(q.co.company_name)}<br><br><br>Authorised Signatory</div>
+  <script>window.onload=function(){window.print();}<\/script></body></html>`;
+  const w=window.open("","_blank"); if(!w){ toast("Allow pop-ups to print the quotation.",true); return; }
+  w.document.write(html); w.document.close();
 }
 
 VIEWS.repair = async (main) => {
@@ -1634,12 +1765,13 @@ function renderTenantTable(tenants){
         statusBadge(t.status),
         `${t.evidence_retention_days}d ev / ${t.event_retention_days}d evt`,
         `<button class="btn sm ghost" data-view="${t.id}">View data</button>`+
-        (isPlatform?` <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>${statusBtn}${removeBtn}`:"")
+        (isPlatform?` <button class="btn sm ghost" data-edit="${t.id}">Edit details</button> <button class="btn sm ghost" data-cred="${t.id}">Credentials</button> <button class="btn sm ghost" data-lic="${t.id}">+ License</button> <button class="btn sm ghost" data-lics="${t.id}">Licenses</button>${statusBtn}${removeBtn}`:"")
       ];
     }));
   wrap.appendChild(t);
   wrap.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>{ S.activeTenant=b.dataset.view; localStorage.setItem("emp_active_tenant",S.activeTenant); toast("Tenant selected"); location.hash="dashboard"; });
   wrap.querySelectorAll("[data-cred]").forEach(b=>b.onclick=()=>showCredentials(tenants.find(x=>x.id===b.dataset.cred)));
+  wrap.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>editTenantDetails(tenants.find(x=>x.id===b.dataset.edit)));
   wrap.querySelectorAll("[data-lic]").forEach(b=>b.onclick=()=>addLicense(b.dataset.lic));
   wrap.querySelectorAll("[data-lics]").forEach(b=>b.onclick=()=>showLicenses(b.dataset.lics));
   wrap.querySelectorAll("[data-status]").forEach(b=>b.onclick=async()=>{
@@ -1770,6 +1902,8 @@ async function addTenant(main){
 
   const f=fields([
     {k:"company_name",label:"Company name"},
+    {k:"address",label:"Address (for quotation / invoice)",type:"textarea"},
+    {k:"gst_no",label:"GST No"},
     {k:"contact_email",label:"Registered email (receives the license key)",type:"email"},
     {k:"deployment_model",label:"Deployment",type:"select",options:["on_premise","cloud_vps","hybrid","central_saas"]},
     {k:"owner_name",label:"Owner name",value:"Account Owner"},
@@ -1818,6 +1952,7 @@ async function addTenant(main){
     const chosen = profiles.find(p => p.id === v.profile_id);
     const body={
       company_name:v.company_name, contact_email:v.contact_email, deployment_model:v.deployment_model,
+      address:v.address||null, gst_no:v.gst_no||null,
       branch_name:v.branch_name||null,
       owner_name:v.owner_name, owner_email:v.owner_email||null, owner_password:v.owner_password||null,
       profile_id: v.profile_id || null,

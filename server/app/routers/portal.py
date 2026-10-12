@@ -42,6 +42,7 @@ from ..schemas import (
     LicenseUpdateIn,
     ProvisionIn,
     ProvisionOut,
+    TenantDetailsIn,
     TenantIn,
     TenantOut,
 )
@@ -122,7 +123,7 @@ router = APIRouter(prefix="/api", tags=["license-portal"])
 def create_tenant(body: TenantIn, request: Request, db: Session = Depends(get_db),
                   admin: AdminUser = Depends(platform_admin)):
     t = Tenant(
-        company_name=body.company_name, address=body.address,
+        company_name=body.company_name, address=body.address, gst_no=body.gst_no,
         contact_email=body.contact_email, contact_phone=body.contact_phone,
         deployment_model=body.deployment_model,
     )
@@ -131,6 +132,26 @@ def create_tenant(body: TenantIn, request: Request, db: Session = Depends(get_db
     audit.record(db, action="tenant_create", tenant_id=t.id, actor_id=admin.id,
                  actor_email=admin.email, target_type="tenant", target_id=t.id,
                  new_value={"company": t.company_name}, source_ip=client_ip(request))
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+@router.patch("/tenants/{tenant_id}/details", response_model=TenantOut,
+              dependencies=[Depends(platform_admin)])
+def update_tenant_details(tenant_id: str, body: TenantDetailsIn, request: Request,
+                          db: Session = Depends(get_db), admin: AdminUser = Depends(platform_admin)):
+    """Edit a customer's billing details (company name, address, GST No, contact) for quotations."""
+    t = db.get(Tenant, tenant_id)
+    if not t:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Customer not found")
+    for field in ("company_name", "address", "gst_no", "contact_email", "contact_phone"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(t, field, val or None)
+    audit.record(db, action="tenant_update", tenant_id=t.id, actor_id=admin.id, actor_email=admin.email,
+                 target_type="tenant", target_id=t.id, new_value={"gst_no": t.gst_no},
+                 source_ip=client_ip(request))
     db.commit()
     db.refresh(t)
     return t
@@ -396,7 +417,7 @@ def provision_customer(body: ProvisionIn, request: Request, db: Session = Depend
     URL for the .lic key file. The key is also emailed to the registered contact address.
     """
     # 1. company / tenant
-    tenant = Tenant(company_name=body.company_name, address=body.address,
+    tenant = Tenant(company_name=body.company_name, address=body.address, gst_no=body.gst_no,
                     contact_email=body.contact_email, contact_phone=body.contact_phone,
                     deployment_model=body.deployment_model)
     db.add(tenant)

@@ -125,6 +125,7 @@ class Tenant(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     address: Mapped[str | None] = mapped_column(Text)
+    gst_no: Mapped[str | None] = mapped_column(String(30))
     contact_email: Mapped[str | None] = mapped_column(String(200))
     contact_phone: Mapped[str | None] = mapped_column(String(50))
     branding: Mapped[dict] = mapped_column(JSON, default=dict)
