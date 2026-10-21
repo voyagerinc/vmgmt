@@ -241,6 +241,7 @@ class Device(Base):
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id"))
     location: Mapped[str | None] = mapped_column(String(120))
     department: Mapped[str | None] = mapped_column(String(120))
+    designation: Mapped[str | None] = mapped_column(String(120))
     status: Mapped[DeviceStatus] = mapped_column(Enum(DeviceStatus), default=DeviceStatus.PENDING)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime)
     enrolled_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

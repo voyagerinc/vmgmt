@@ -406,17 +406,35 @@ VIEWS.devices = async (main, args) => {
   search.oninput=debounce(load,300); sel.onchange=load; load();
 };
 
+function editDeviceInfo(id, dev, main){
+  const f=fields([
+    {k:"department",label:"Department",value:dev.department||""},
+    {k:"designation",label:"Designation",value:dev.designation||""},
+    {k:"location",label:"Location",value:dev.location||""},
+  ]);
+  modal(`Edit device — ${esc(dev.hostname)}`, f, async()=>{
+    const v=f._values();
+    await api(`/api/devices/${id}`,{method:"PATCH",body:{
+      department:(v.department||"").trim()||null,
+      designation:(v.designation||"").trim()||null,
+      location:(v.location||"").trim()||null}});
+    toast("Device updated");
+    deviceDetail(main, id);
+  }, "Save");
+}
+
 async function deviceDetail(main, id){
   main.innerHTML=""; main.appendChild(topbar("Device detail",[el(`<a class="btn ghost sm" href="#devices">← Back</a>`)]));
   const d=await api(`/api/devices/${id}/detail`);
   const dev=d.device;
   const info=el(`<div class="card"></div>`);
   info.appendChild(el(`<h3 style="margin:0 0 6px">${esc(dev.hostname)} ${statusBadge(dev.status)}</h3>`));
-  info.appendChild(el(`<div class="muted" style="margin-bottom:10px">${esc(dev.os_name||"")} ${esc(dev.os_version||"")} · ${esc(dev.ip_address||"")} · ${esc(dev.mac_address||"")} · agent ${esc(dev.agent_version||"?")}</div>`));
+  info.appendChild(el(`<div class="muted" style="margin-bottom:10px">${esc(dev.os_name||"")} ${esc(dev.os_version||"")} · IP: ${esc(dev.ip_address||"—")} · MAC: ${esc(dev.mac_address||"—")} · agent ${esc(dev.agent_version||"?")}</div>`));
   const hw=dev.hardware||{};
-  info.appendChild(el(`<div class="toolbar"><span class="pill">CPU: ${esc(hw.cpu||"?")}</span><span class="pill">RAM: ${esc(hw.ram_gb||"?")} GB</span><span class="pill">Disk: ${esc(hw.disk_gb||"?")} GB</span><span class="pill">Dept: ${esc(dev.department||"—")}</span><span class="pill">Loc: ${esc(dev.location||"—")}</span>
-    <button class="btn sm" id="viewBtn">👁 Live screen (silent)</button><button class="btn sm ghost" id="ssBtn">Request screenshot</button><button class="btn sm ghost" id="rsBtn">Remote support</button><button class="btn sm ghost" id="syncBtn">Force resync</button></div>`));
+  info.appendChild(el(`<div class="toolbar"><span class="pill">IP: ${esc(dev.ip_address||"—")}</span><span class="pill">MAC: ${esc(dev.mac_address||"—")}</span><span class="pill">CPU: ${esc(hw.cpu||"?")}</span><span class="pill">RAM: ${esc(hw.ram_gb||"?")} GB</span><span class="pill">Disk: ${esc(hw.disk_gb||"?")} GB</span><span class="pill">Dept: ${esc(dev.department||"—")}</span><span class="pill">Designation: ${esc(dev.designation||"—")}</span><span class="pill">Loc: ${esc(dev.location||"—")}</span>
+    <button class="btn sm ghost" id="editBtn">✎ Edit</button><button class="btn sm" id="viewBtn">👁 Live screen (silent)</button><button class="btn sm ghost" id="ssBtn">Request screenshot</button><button class="btn sm ghost" id="rsBtn">Remote support</button><button class="btn sm ghost" id="syncBtn">Force resync</button></div>`));
   main.appendChild(info);
+  info.querySelector("#editBtn").onclick=()=>editDeviceInfo(id, dev, main);
   info.querySelector("#viewBtn").onclick=()=>silentView(id, dev.hostname);
   info.querySelector("#ssBtn").onclick=()=>requestScreenshot(id);
   info.querySelector("#rsBtn").onclick=()=>requestRemote(id);

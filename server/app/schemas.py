@@ -253,6 +253,7 @@ class DeviceOut(ORM):
     agent_version: str | None
     employee_id: str | None
     department: str | None
+    designation: str | None = None
     location: str | None
     status: DeviceStatus
     last_seen: datetime | None
@@ -266,6 +267,7 @@ class DeviceOut(ORM):
 class DevicePatch(BaseModel):
     employee_id: str | None = None
     department: str | None = None
+    designation: str | None = None
     location: str | None = None
 
 
