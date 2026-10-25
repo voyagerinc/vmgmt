@@ -734,9 +734,22 @@ class EventTracker:
         base = r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU"
         seen = self.cursor.setdefault("mru", {})
         changed = False
-        for ext in self.settings.get("file_types") or []:
+        # Enumerate EVERY file-type subkey (pdf, docx, jpg, zip, *, ...) so attachments of ANY
+        # type picked for upload in webmail are captured — not only the configured file_types.
+        exts = []
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base) as bk:
+                i = 0
+                while True:
+                    try:
+                        exts.append(winreg.EnumKey(bk, i)); i += 1
+                    except OSError:
+                        break
+        except OSError:
+            return
+        for ext in exts:                                   # ext = registry subkey name e.g. "pdf" / "*"
             try:
-                k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"{base}\\{ext.lstrip('.')}")
+                k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"{base}\\{ext}")
             except OSError:
                 continue
             with k:
@@ -895,7 +908,9 @@ class EventTracker:
                 continue
             files = [a for a in d["attachments"] if not a["inline"]]
             tracked = [a["name"] for a in files if self._tracked(a["name"])]
-            if not (self._on("email_all") or tracked):
+            # email_all -> every sent mail; otherwise any mail carrying ANY attachment (all types,
+            # incl. PDF) so attachment file names are always captured.
+            if not (self._on("email_all") or files):
                 continue
             to_txt = "; ".join(d["to"])
             parts = [f"From {d['from'] or '?'} to {to_txt or '?'}"]

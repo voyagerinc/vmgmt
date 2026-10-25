@@ -394,17 +394,33 @@ VIEWS.devices = async (main, args) => {
   async function load(){
     const rows=await api("/api/devices"+qp({q:search.value, status_filter:sel.value}));
     host.innerHTML="";
-    host.appendChild(tableFrom(["Hostname","Current user","OS","Status","IP","Agent","Last seen","Actions"],
+    host.appendChild(tableFrom(["Hostname","Current user","OS","Status","IP","MAC","Department","Designation","Agent","Last seen","Actions"],
       rows.map(d=>[`<a href="#devices/${d.id}">${esc(d.hostname||"(unnamed)")}</a>`,
         esc(d.current_user||"—")+((d.logged_users||[]).length>1?`<div class="muted" style="font-size:11px">also: ${esc(d.logged_users.filter(u=>u!==d.current_user).join(", "))}</div>`:""),
-        esc((d.os_name||"")+" "+(d.os_version||"")), statusBadge(d.status), esc(d.ip_address||"—"),
+        esc((d.os_name||"")+" "+(d.os_version||"")), statusBadge(d.status), esc(d.ip_address||"—"), esc(d.mac_address||"—"),
+        esc(d.department||"—"), esc(d.designation||"—"),
         esc(d.agent_version||"—"), ago(d.last_seen),
-        `<button class="btn sm ghost" data-ss="${d.id}">Screenshot</button> <button class="btn sm danger" data-rev="${d.id}">Revoke</button>`])));
+        `<button class="btn sm ghost" data-edit="${d.id}">Edit</button> <button class="btn sm ghost" data-ss="${d.id}">Screenshot</button> <button class="btn sm danger" data-rev="${d.id}">Revoke</button>`])));
+    host.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>editDeviceDetails(rows.find(x=>x.id===b.dataset.edit),load));
     host.querySelectorAll("[data-ss]").forEach(b=>b.onclick=()=>requestScreenshot(b.dataset.ss));
     host.querySelectorAll("[data-rev]").forEach(b=>b.onclick=async()=>{ if(confirm("Revoke device? Agent will be denied.")){ await api(`/api/devices/${b.dataset.rev}/revoke`,{method:"POST"}); toast("Device revoked"); load(); }});
   }
   search.oninput=debounce(load,300); sel.onchange=load; load();
 };
+
+function editDeviceDetails(d, onDone){
+  if(!d) return;
+  const f=fields([
+    {k:"department",label:"Department",value:d.department||""},
+    {k:"designation",label:"Designation",value:d.designation||""},
+    {k:"location",label:"Location",value:d.location||""},
+  ]);
+  modal(`Edit — ${esc(d.hostname||d.id.slice(0,8))}`,f,async()=>{
+    const v=f._values();
+    await api(`/api/devices/${d.id}`,{method:"PATCH",body:{department:v.department.trim()||null,designation:v.designation.trim()||null,location:v.location.trim()||null}});
+    toast("Device details saved"); onDone&&onDone();
+  },"Save");
+}
 
 function editDeviceInfo(id, dev, main){
   const f=fields([
@@ -431,7 +447,7 @@ async function deviceDetail(main, id){
   info.appendChild(el(`<h3 style="margin:0 0 6px">${esc(dev.hostname)} ${statusBadge(dev.status)}</h3>`));
   info.appendChild(el(`<div class="muted" style="margin-bottom:10px">${esc(dev.os_name||"")} ${esc(dev.os_version||"")} · IP: ${esc(dev.ip_address||"—")} · MAC: ${esc(dev.mac_address||"—")} · agent ${esc(dev.agent_version||"?")}</div>`));
   const hw=dev.hardware||{};
-  info.appendChild(el(`<div class="toolbar"><span class="pill">IP: ${esc(dev.ip_address||"—")}</span><span class="pill">MAC: ${esc(dev.mac_address||"—")}</span><span class="pill">CPU: ${esc(hw.cpu||"?")}</span><span class="pill">RAM: ${esc(hw.ram_gb||"?")} GB</span><span class="pill">Disk: ${esc(hw.disk_gb||"?")} GB</span><span class="pill">Dept: ${esc(dev.department||"—")}</span><span class="pill">Designation: ${esc(dev.designation||"—")}</span><span class="pill">Loc: ${esc(dev.location||"—")}</span>
+  info.appendChild(el(`<div class="toolbar"><span class="pill">IP: ${esc(dev.ip_address||"—")}</span><span class="pill">MAC: ${esc(dev.mac_address||"—")}</span><span class="pill">CPU: ${esc(hw.cpu||"?")}</span><span class="pill">RAM: ${esc(hw.ram_gb||"?")} GB</span><span class="pill">Disk: ${esc(hw.disk_gb||"?")} GB</span><span class="pill">User: ${esc(dev.current_user||"—")}</span><span class="pill">Dept: ${esc(dev.department||"—")}</span><span class="pill">Designation: ${esc(dev.designation||"—")}</span><span class="pill">Loc: ${esc(dev.location||"—")}</span>
     <button class="btn sm ghost" id="editBtn">✎ Edit</button><button class="btn sm" id="viewBtn">👁 Live screen (silent)</button><button class="btn sm ghost" id="ssBtn">Request screenshot</button><button class="btn sm ghost" id="rsBtn">Remote support</button><button class="btn sm ghost" id="syncBtn">Force resync</button></div>`));
   main.appendChild(info);
   info.querySelector("#editBtn").onclick=()=>editDeviceInfo(id, dev, main);
