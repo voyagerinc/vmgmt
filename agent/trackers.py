@@ -31,6 +31,11 @@ _BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe"
 _WEBMAIL = ("gmail", "mail.google", "outlook", "office 365", "microsoft 365", "yahoo mail",
             "zoho mail", "rediffmail", "proton mail", "inbox", "compose", "new message", "mail -")
 
+# Local receiver for the Voyager browser extension (webmail subject/to/cc/bcc/attachments).
+# Bound to localhost only; the shared token is baked into both the agent and the extension.
+WEBMAIL_PORT = 47113
+WEBMAIL_TOKEN = "voyager-webmail-v1"
+
 
 # server clock minus this PC's clock (seconds), learned from each heartbeat's server_time;
 # event times are corrected by it so a PC with a wrong clock still reports the right time
@@ -88,7 +93,7 @@ class EventTracker:
                      settings.get("sync_interval"))
         if not self._threads and IS_WIN:
             for fn in (self._login_loop, self._network_loop, self._usb_loop, self._email_loop,
-                       self._app_loop, self._web_loop):
+                       self._webmail_loop, self._app_loop, self._web_loop):
                 t = threading.Thread(target=self._guard, args=(fn,), name=fn.__name__, daemon=True)
                 t.start()
                 self._threads.append(t)
@@ -713,6 +718,84 @@ class EventTracker:
                     self._check_outlook()
                 except Exception as e:
                     log.info("Outlook check skipped: %s", e)
+
+    def _webmail_loop(self) -> None:
+        """Local receiver for the Voyager browser extension: it reports each webmail send
+        (subject, to/cc/bcc, attachment names) to http://127.0.0.1:47113/webmail. Binds to
+        localhost only and requires a shared token. Metadata only — never the mail body."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        tracker = self
+
+        class _H(BaseHTTPRequestHandler):
+            def log_message(self, *a):           # silence default logging
+                pass
+
+            def _cors(self):
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Voyager-Token")
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+
+            def do_OPTIONS(self):
+                self.send_response(204); self._cors(); self.end_headers()
+
+            def do_GET(self):                     # health probe for the extension
+                self.send_response(200); self._cors()
+                self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true,"app":"voyager-agent"}')
+
+            def do_POST(self):
+                if self.headers.get("X-Voyager-Token") != WEBMAIL_TOKEN:
+                    self.send_response(403); self._cors(); self.end_headers(); return
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    data = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+                except Exception:
+                    self.send_response(400); self._cors(); self.end_headers(); return
+                try:
+                    tracker._on_webmail(data)
+                except Exception as e:
+                    log.info("webmail event error: %s", e)
+                self.send_response(200); self._cors()
+                self.send_header("Content-Type", "application/json"); self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", WEBMAIL_PORT), _H)
+        except OSError as e:
+            log.info("Webmail receiver not started (port busy?): %s", e)
+            return
+        log.info("Webmail receiver on 127.0.0.1:%d", WEBMAIL_PORT)
+        while not self._stop.wait(0.5):
+            srv.handle_request()
+
+    def _on_webmail(self, d: dict) -> None:
+        """Handle one webmail-send report from the extension (gated by the email trackers)."""
+        if not (self._on("email_files") or self._on("email_all")):
+            return
+        def _lst(v):
+            if isinstance(v, list):
+                return [str(x).strip() for x in v if str(x).strip()]
+            return [p.strip() for p in str(v or "").replace(";", ",").split(",") if p.strip()]
+        to, cc, bcc = _lst(d.get("to")), _lst(d.get("cc")), _lst(d.get("bcc"))
+        atts = _lst(d.get("attachments"))
+        subject = (str(d.get("subject") or "")[:300])
+        account = str(d.get("account") or d.get("from") or "")[:200]
+        provider = str(d.get("provider") or "webmail")[:60]
+        parts = [f"From {account or provider} to {'; '.join(to) or '?'}"]
+        if cc:
+            parts.append(f"CC {'; '.join(cc)}")
+        if bcc:
+            parts.append(f"BCC {'; '.join(bcc)}")
+        parts.append(f"Subject: {subject or '(no subject)'}")
+        parts.append(f"{len(atts)} attachment(s)" + (f": {', '.join(atts)}" if atts else ""))
+        self.emit("email", "email_sent", " | ".join(parts)[:1900],
+                  file_name="; ".join(atts)[:400] or None,
+                  file_ext=(os.path.splitext(atts[0])[1].lower() if atts else None) or None,
+                  target="; ".join(to)[:400] or None,
+                  meta={"from": account, "from_name": "", "to": to, "cc": cc, "bcc": bcc,
+                        "subject": subject, "attachments": [{"name": a} for a in atts],
+                        "provider": provider, "source": "webmail"})
 
     @staticmethod
     def _foreground():

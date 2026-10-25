@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Voyager Mail Monitor",
+  "version": "1.0.0",
+  "description": "Company-managed monitoring: reports outbound webmail metadata (recipients, subject, attachment names) to the local Voyager endpoint agent. Metadata only - never message bodies.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://mail.google.com/*",
+    "https://outlook.office.com/*",
+    "https://outlook.office365.com/*",
+    "https://outlook.live.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["common.js", "gmail.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://outlook.office.com/*",
+        "https://outlook.office365.com/*",
+        "https://outlook.live.com/*"
+      ],
+      "js": ["common.js", "outlook.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "icons": { "128": "icon128.png" }
+}
