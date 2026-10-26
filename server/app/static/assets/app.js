@@ -456,6 +456,28 @@ async function deviceDetail(main, id){
   info.querySelector("#rsBtn").onclick=()=>requestRemote(id);
   info.querySelector("#syncBtn").onclick=async()=>{ await api(`/api/devices/${id}/resync`,{method:"POST"}); toast("Resync queued"); };
 
+  // ---- Active vs idle time (last 24h), idle split into short breaks vs long idle ----
+  const it=d.idle||{active_seconds:0,idle_seconds:0,short_seconds:0,long_seconds:0,short_count:0,long_count:0,long_threshold:900};
+  const thrMin=Math.round((it.long_threshold||900)/60);
+  const tot=(it.active_seconds||0)+(it.idle_seconds||0);
+  const pct=s=>tot>0?Math.round(s*100/tot):0;
+  const idleCard=el(`<div class="card" style="margin-top:14px"><h3 style="margin:0 0 4px">Active &amp; idle time <span class="muted" style="font-weight:400">· last 24h</span></h3>
+    <div class="muted" style="margin-bottom:10px;font-size:12px">Idle = no keyboard/mouse input for 2+ min. Split into short breaks (&lt;${thrMin} min) and long idle (&ge;${thrMin} min). Needs Active-time / activity tracking enabled.</div>
+    <div class="toolbar">
+      <span class="pill" style="border-color:#60a5fa">Active: <b>${fmtHM(it.active_seconds||0)}</b> · ${pct(it.active_seconds||0)}%</span>
+      <span class="pill" style="border-color:#94a3b8">Idle total: <b>${fmtHM(it.idle_seconds||0)}</b> · ${pct(it.idle_seconds||0)}%</span>
+      <span class="pill">Short breaks (&lt;${thrMin}m): <b>${fmtHM(it.short_seconds||0)}</b> · ${it.short_count||0}×</span>
+      <span class="pill">Long idle (&ge;${thrMin}m): <b>${fmtHM(it.long_seconds||0)}</b> · ${it.long_count||0}×</span>
+    </div>
+    <div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin-top:12px;background:var(--panel2);border:1px solid var(--line)">
+      <div title="Active ${fmtHM(it.active_seconds||0)}" style="width:${pct(it.active_seconds||0)}%;background:#60a5fa"></div>
+      <div title="Short breaks ${fmtHM(it.short_seconds||0)}" style="width:${pct(it.short_seconds||0)}%;background:#cbd5e1"></div>
+      <div title="Long idle ${fmtHM(it.long_seconds||0)}" style="width:${pct(it.long_seconds||0)}%;background:#64748b"></div>
+    </div>
+    ${tot===0?'<div class="muted" style="margin-top:10px">No activity recorded in the last 24h.</div>':''}
+  </div>`);
+  main.appendChild(idleCard);
+
   // ---- Per-agent data profile (what this device collects / shows) ----
   const prof=d.collection||{};
   const CATS=[["health","Resource health (CPU/RAM/disk/battery)"],["active_time","Active-time tracking"],

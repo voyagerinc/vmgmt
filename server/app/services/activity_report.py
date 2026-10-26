@@ -128,6 +128,27 @@ def usage(db: Session, tid: str, by: str, start, end, device_id=None) -> list[di
             for dev, n, s, c, f, l in rows]
 
 
+def idle_breakdown(db: Session, tid: str, start, end, device_id=None, long_threshold: int = 900) -> dict:
+    """Idle time split into short breaks (< long_threshold s) vs long idle (>=).
+    Also returns active (foreground app+web) seconds for context. Default split = 15 min."""
+    dur = ActivityEvent.duration_seconds
+    short_s = func.sum(case((dur < long_threshold, dur), else_=0))
+    long_s = func.sum(case((dur >= long_threshold, dur), else_=0))
+    short_n = func.sum(case((dur < long_threshold, 1), else_=0))
+    long_n = func.sum(case((dur >= long_threshold, 1), else_=0))
+    q = db.query(short_s, long_s, short_n, long_n)
+    q = _filters(q, start, end, tid, device_id).filter(ActivityEvent.event_type == "idle", dur > 0)
+    ss, ls, sn, ln = q.one()
+    aq = db.query(_secs())
+    aq = _filters(aq, start, end, tid, device_id).filter(ActivityEvent.event_type.in_(APP_TYPES + WEB_TYPES))
+    active = int(aq.scalar() or 0)
+    ss, ls = int(ss or 0), int(ls or 0)
+    return {"short_seconds": ss, "short_count": int(sn or 0),
+            "long_seconds": ls, "long_count": int(ln or 0),
+            "idle_seconds": ss + ls, "active_seconds": active,
+            "long_threshold": long_threshold}
+
+
 def events(db: Session, tid: str, start, end, device_id=None, kind: str | None = None,
            q: str | None = None, limit: int = 200, offset: int = 0):
     names = device_names(db, tid)

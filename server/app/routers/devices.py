@@ -22,6 +22,7 @@ from ..models import (
     ActivityEvent,
 )
 from ..schemas import DeviceOut, DevicePatch, EnrollTokenIn, EnrollTokenOut
+from ..services import activity_report
 
 router = APIRouter(prefix="/api", tags=["devices"])
 
@@ -47,10 +48,13 @@ def get_device(device_id: str, db: Session = Depends(get_db),
 
 
 @router.get("/devices/{device_id}/detail")
-def device_detail(device_id: str, db: Session = Depends(get_db),
+def device_detail(device_id: str, date_from: str | None = Query(None), date_to: str | None = Query(None),
+                  tz_offset: int = Query(0), db: Session = Depends(get_db),
                   user: "AdminUser" = Depends(get_current_user)):
     """Single-view device detail page (PRD §21.2)."""
     d = _get_scoped(db, user, device_id)
+    a_start, a_end = activity_report.window(date_from, date_to, tz_offset, hours=24)
+    idle = activity_report.idle_breakdown(db, d.tenant_id, a_start, a_end, d.id)
     recent_health = (db.query(HealthMetric).filter(HealthMetric.device_id == d.id)
                      .order_by(HealthMetric.ts.desc()).limit(50).all())
     software = db.query(Software).filter(Software.device_id == d.id, Software.present == True).all()  # noqa
@@ -63,6 +67,7 @@ def device_detail(device_id: str, db: Session = Depends(get_db),
     return {
         "device": DeviceOut.model_validate(d).model_dump(),
         "collection": d.collection or {},
+        "idle": idle,
         "health": [{"ts": h.ts, "cpu": h.cpu_percent, "ram": h.ram_percent,
                     "disk": h.disk_percent, "battery": h.battery_percent} for h in recent_health],
         "software": [{"name": s.name, "version": s.version, "publisher": s.publisher,
