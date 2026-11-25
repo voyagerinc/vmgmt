@@ -252,6 +252,7 @@ class DeviceOut(ORM):
     mac_address: str | None
     agent_version: str | None
     employee_id: str | None
+    emp_name: str | None = None
     department: str | None
     designation: str | None = None
     location: str | None
@@ -266,6 +267,7 @@ class DeviceOut(ORM):
 
 class DevicePatch(BaseModel):
     employee_id: str | None = None
+    emp_name: str | None = None
     department: str | None = None
     designation: str | None = None
     location: str | None = None

@@ -239,6 +239,7 @@ class Device(Base):
     mac_address: Mapped[str | None] = mapped_column(String(64))
     agent_version: Mapped[str | None] = mapped_column(String(40))
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id"))
+    emp_name: Mapped[str | None] = mapped_column(String(120))   # employee name, set manually by admin
     location: Mapped[str | None] = mapped_column(String(120))
     department: Mapped[str | None] = mapped_column(String(120))
     designation: Mapped[str | None] = mapped_column(String(120))

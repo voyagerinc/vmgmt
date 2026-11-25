@@ -77,9 +77,10 @@ def hardware_list(tenant_id: str | None = Query(None), device_id: str | None = N
     q = db.query(Device).filter(Device.tenant_id == tid)
     if device_id:
         q = q.filter(Device.id == device_id)
-    return [{"id": d.id, "hostname": d.hostname, "current_user": d.current_user, "status": d.status.value,
-             "last_seen": d.last_seen, "ip_address": d.ip_address, "agent_version": d.agent_version,
-             "hardware": d.hardware or {}} for d in q.order_by(Device.hostname).all()]
+    return [{"id": d.id, "hostname": d.hostname, "current_user": d.current_user, "emp_name": d.emp_name,
+             "status": d.status.value, "last_seen": d.last_seen, "ip_address": d.ip_address,
+             "agent_version": d.agent_version, "hardware": d.hardware or {}}
+            for d in q.order_by(Device.hostname).all()]
 
 
 @router.get("/agent-repair")

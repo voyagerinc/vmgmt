@@ -714,19 +714,33 @@ VIEWS.assets = async (main, args) => {
   main.appendChild(exp);
   const gbs=(v)=>v==null?"—":`${v} GB`;
   const c=el(`<div class="card"></div>`);
-  c.appendChild(tableFrom(["Computer","Current user","Make / model","Serial","CPU","RAM","Disks","C: free","OS","Last boot",""],
+  c.appendChild(tableFrom(["Computer","Current user","Emp name","Make / model","Serial","CPU","RAM","Disks","C: free","OS","Last boot",""],
     rows.map(d=>{ const h=d.hardware||{}; const disks=(h.disks||[]).map(x=>`${x.gb??"?"} GB ${x.type&&x.type!=="Unknown"?x.type:""}`.trim()).join(", ");
       const c0=(h.volumes||[]).find(v=>v.drive==="C:");
       return [`<b>${esc(d.hostname)}</b><div class="muted" style="font-size:11px">${statusBadge(d.status)} ${esc(d.ip_address||"")}</div>`,
-        esc(d.current_user||"—"),esc([h.manufacturer,h.model].filter(Boolean).join(" ")||"—"),esc(h.serial||"—"),
+        esc(d.current_user||"—"),
+        `<span class="empedit" data-id="${d.id}" data-name="${esc(d.emp_name||"")}" title="Click to set employee name" style="cursor:pointer;border-bottom:1px dashed var(--line)">${d.emp_name?esc(d.emp_name):'<span class="muted">✎ set</span>'}</span>`,
+        esc([h.manufacturer,h.model].filter(Boolean).join(" ")||"—"),esc(h.serial||"—"),
         esc(h.cpu||"—")+(h.cores?`<div class="muted" style="font-size:11px">${h.cores} cores / ${h.threads||h.cores} threads</div>`:""),
         gbs(h.ram_gb),esc(disks||(h.disk_gb?h.disk_gb+" GB":"—")),
         c0?`${c0.free_gb} of ${c0.gb} GB`:"—",esc(h.os||"—"),esc(h.last_boot||"—"),
         `<button class="btn sm ghost" data-hw="${d.id}">Details</button>`]; })));
   c.querySelectorAll("[data-hw]").forEach(b=>b.onclick=()=>showHardware(rows.find(x=>x.id===b.dataset.hw)));
+  c.querySelectorAll(".empedit").forEach(sp=>sp.onclick=()=>editEmpName(sp));
   main.appendChild(c);
   if(rows.length&&!rows.some(d=>(d.hardware||{}).serial)) main.appendChild(el(`<div class="notice" style="margin-top:10px">Full hardware details (model, serial, memory, disks, GPU…) arrive from agent 4.6 or newer — update agents in Settings → Agent updates.</div>`));
 };
+function editEmpName(sp){
+  const id=sp.dataset.id;
+  const f=fields([{k:"emp_name",label:"Employee name",value:sp.dataset.name||""}]);
+  modal("Set employee name", f, async()=>{
+    const v=(f._values().emp_name||"").trim();
+    await api(`/api/devices/${id}`,{method:"PATCH",body:{emp_name:v||null}});
+    sp.dataset.name=v;
+    sp.innerHTML=v?esc(v):'<span class="muted">✎ set</span>';
+    toast("Employee name updated");
+  }, "Save");
+}
 function showHardware(d){
   const h=d.hardware||{}, r=(k,v)=>`<tr><th style="text-align:left;width:150px">${k}</th><td>${v??"—"}</td></tr>`;
   const body=el(`<div style="max-width:780px"><table>
